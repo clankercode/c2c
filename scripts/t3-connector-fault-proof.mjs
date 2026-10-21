@@ -37,7 +37,12 @@ async function exercise(options, fixture, evidence) {
   for (const dir of [config, nativeHome]) fs.mkdirSync(dir, { mode: 0o700 });
   const env = { HOME: nativeHome, PATH: process.env.PATH, LANG: 'C.UTF-8',
     T3CODE_HOME: fixture.t3Home, C2C_T3_CONFIG_DIR: config, C2C_NO_AUTO_REGISTER: '1' };
+  const assertBinariesStable = () => {
+    assert.equal(hashFile(options.c2cBin), evidence.c2cSha256, 'c2c changed during the proof');
+    assert.equal(hashFile(options.faultBin), evidence.faultHarnessSha256, 'fault harness changed during the proof');
+  };
   const pair = (replace = false) => {
+    assertBinariesStable();
     const output = execFileSync(options.t3Bin, ['auth', 'pairing', 'create', '--base-dir', fixture.t3Home,
       '--scope', 'orchestration:read', '--scope', 'orchestration:operate', '--ttl', '10m',
       '--label', 'c2c dispatcher fault proof', '--json'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -57,6 +62,7 @@ async function exercise(options, fixture, evidence) {
     modelSelection: { instanceId: provider.providerInstanceId, model: 'c2c-fixture' } });
   const children = new Set();
   const startNative = (action, name, label, stateName = name) => {
+    assertBinariesStable();
     const output = path.join(root, `${label}.json`);
     const gate = path.join(root, `${label}-gate`);
     const log = fs.openSync(path.join(root, `${label}.log`), 'wx', 0o600);
@@ -159,6 +165,7 @@ async function exercise(options, fixture, evidence) {
     assert.equal(providerRows.filter((r) => r.method === 'turn/steer' && r.continuation).length, 0);
     evidence.cases.concurrentStart = { injectedAfterFreshPreflight: true, activeUserRunPreserved: true,
       recoveryQueued: true, continueSteerCalls: 0 };
+    assertBinariesStable();
     return evidence;
   } finally {
     let cleanupFailure;

@@ -158,9 +158,15 @@ let state_snapshot () =
       `Assoc [ ("available", `Bool false); ("reason", `String "state directory ownership or permissions are unsafe") ]
     else if not (Sys.file_exists path) then
       `Assoc [ ("available", `Bool true); ("initialized", `Bool false); ("pending", `Int 0); ("mappings", `Int 0) ]
+    else if Result.is_error (State.open_read_only
+              ~environment_id:(environment_id_of_home (t3_home ())) ~dir:directory ()) then
+      `Assoc [ ("available", `Bool false); ("reason", `String "state validation failed: malformed, foreign or unsafe state is preserved") ]
     else
       try
-        match Yojson.Safe.from_file path with
+        let contents = match C2c_t3_systemd.read_owned_regular ~private_mode:true
+            ~max_bytes:(128 * 1024 * 1024) path with
+          | Ok contents -> contents | Error _ -> failwith "unsafe state snapshot" in
+        match Yojson.Safe.from_string contents with
         | `Assoc fields ->
             let list key = match List.assoc_opt key fields with Some (`List values) -> values | _ -> [] in
             let journal = list "journal" in
@@ -638,7 +644,7 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
    final heartbeat from looking like a running monitor after a restart. *)
 let service_status_path () = state_dir () // "service-status.json"
 
-let write_service_status ~started_at ~finished_at ~interval ~recovery ~healthy =
+let write_service_status ~started_at ~finished_at ~interval ~recovery ~recovery_hold ~healthy =
   let json_float = function None -> `Null | Some value -> `Float value in
   let generation = C2c_pid_identity.read_pid_generation (Unix.getpid ()) in
   let fields =
@@ -648,7 +654,10 @@ let write_service_status ~started_at ~finished_at ~interval ~recovery ~healthy =
       ("lastSweepAt", `Float started_at);
       ("completedAt", json_float finished_at);
       ("nextSweepAt", json_float (Option.map (fun at -> at +. interval) finished_at));
-      ("intervalSeconds", `Float interval); ("recoveryEnabled", `Bool recovery);
+      ("intervalSeconds", `Float interval);
+      ("recoveryRequested", `Bool recovery);
+      ("recoveryEnabled", `Bool (recovery && recovery_hold = None));
+      ("recoveryHold", match recovery_hold with Some reason -> `String reason | None -> `Null);
       ("healthy", `Bool healthy) ]
   in
   match C2c_io.write_file_atomic ~perm:0o600 (service_status_path ())
@@ -683,27 +692,31 @@ let foreground_cmd foreground once interval mode cross_repo recovery_override =
     (print_error "service interval must be finite and at least one second"; exit 1);
   with_state (fun state ->
     let rec loop () =
-      let recovery =
+      let recovery, configuration_healthy =
         match configured_recovery () with
-        | Ok configured -> Option.value recovery_override ~default:configured
-        | Error error ->
+        | Ok configured -> Option.value recovery_override ~default:configured, true
+        | Error _ ->
             (* Never leave recovery enabled when its durable configuration is
                malformed or unsafe.  Continue serving already accepted mail,
                but hold new model-availability actions until repair. *)
-            Printf.eprintf "warning: model-availability recovery disabled: %s\n%!" error;
-            false
+            Printf.eprintf "warning: model-availability recovery configuration is invalid or unsafe; inspect c2c t3 service doctor --json\n%!";
+            false, false
       in
+      let recovery_hold = ref (if configuration_healthy then None
+        else Some "recovery configuration is invalid or unsafe; repair owned permissions or correct the config") in
       let started_at = now () in
-      write_service_status ~started_at ~finished_at:None ~interval ~recovery ~healthy:false;
+      write_service_status ~started_at ~finished_at:None ~interval ~recovery ~recovery_hold:!recovery_hold ~healthy:false;
       let healthy =
         match authorized ~rebind:true () with
         | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error; false
         | Ok (client, runtime) ->
+            if recovery then recovery_hold := Recovery.version_hold_reason runtime.T3.server_version;
             (match service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery with
              | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error; false
-             | Ok (scan, applied) -> scan.Service.complete && applied.Service.errors = [])
+             | Ok (scan, applied) -> scan.Service.complete && applied.Service.errors = []
+                                    && configuration_healthy && !recovery_hold = None)
       in
-      write_service_status ~started_at ~finished_at:(Some (now ())) ~interval ~recovery ~healthy;
+      write_service_status ~started_at ~finished_at:(Some (now ())) ~interval ~recovery ~recovery_hold:!recovery_hold ~healthy;
       if once then 0 else (ignore (Unix.select [] [] [] interval); loop ())
     in
     loop ())
@@ -761,28 +774,60 @@ let doctor_cmd json =
     | _ -> false
   in
   let monitor = read_service_status () in
-  let monitor_healthy = match monitor with
+  let monitor_validation = match monitor with
     | `Assoc fields when List.assoc_opt "running" fields = Some (`Bool true) ->
-        List.assoc_opt "healthy" fields = Some (`Bool true)
-    | _ -> true
+        let ( let* ) = Result.bind in
+        let* pid = match List.assoc_opt "pid" fields with
+          | Some (`Int pid) -> Ok pid | _ -> Error "connector monitor PID is unavailable" in
+        let* c2c_path = C2c_t3_systemd.c2c_path () in
+        let* generation = C2c_t3_systemd.check_process ~pid ~c2c_path
+            ~t3_home:(t3_home ()) ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) () in
+        C2c_t3_systemd.check_monitor ~pid ~generation ~t3_home:(t3_home ()) ~state_dir:(state_dir ()) ()
+    | _ -> Error "connector monitor is not running; run c2c t3 service or c2c t3 service install"
   in
+  let monitor_healthy = Result.is_ok monitor_validation in
+  let monitor = match monitor with
+    | `Assoc fields -> `Assoc (("verifiedHealthy", `Bool monitor_healthy)
+        :: ("readinessError", match monitor_validation with Ok () -> `Null | Error reason -> `String reason) :: fields)
+    | _ -> monitor in
   let runtime_ready = match runtime with `Assoc fields -> List.assoc_opt "ready" fields = Some (`Bool true) | _ -> false in
   let credential_present = match credential with `Assoc fields -> List.assoc_opt "present" fields = Some (`Bool true) | _ -> false in
-  let recovery_reason =
-    match runtime_result with
-    | Ok r -> Recovery.version_hold_reason r.server_version
-    | Error _ -> Some "T3 runtime is unavailable"
+  let recovery_configuration = configured_recovery () in
+  let recovery_enabled_value = match recovery_configuration with
+    | Error _ -> false
+    | Ok configured ->
+        (match monitor with
+         | `Assoc fields when List.assoc_opt "running" fields = Some (`Bool true) ->
+             (match List.assoc_opt "recoveryRequested" fields with
+              | Some (`Bool requested) -> requested | _ -> configured)
+         | _ -> configured)
   in
-  let recovery_enabled_value = recovery_enabled () in
+  let recovery_reason =
+    match recovery_configuration with
+    | Error _ -> Some "recovery configuration is invalid or unsafe; repair owned permissions or correct the config"
+    | Ok _ when not recovery_enabled_value -> None
+    | Ok _ ->
+        (match runtime_result with
+         | Ok r -> Recovery.version_hold_reason r.server_version
+         | Error _ -> Some "T3 runtime is unavailable")
+  in
   let unit_active = C2c_t3_systemd.unit_is_active () in
   let unit_enabled = C2c_t3_systemd.unit_is_enabled () in
+  let configured_ready = runtime_ready && credential_present && api_ready
+                         && state_healthy && recovery_reason = None in
+  let effective_recovery_reason = match recovery_reason, monitor_validation with
+    | (Some _ as reason), _ -> reason
+    | None, Error reason when recovery_enabled_value -> Some reason
+    | _ -> None in
   let result =
-    `Assoc [ ("healthy", `Bool (runtime_ready && credential_present && api_ready
-                               && state_healthy && monitor_healthy));
+    `Assoc [ ("healthy", `Bool (configured_ready && monitor_healthy));
+             ("configuredReady", `Bool configured_ready);
              ("runtime", runtime); ("credential", credential); ("api", api);
              ("permissionCeiling", permission_ceiling); ("state", state);
-             ("recoveryEnabled", `Bool recovery_enabled_value);
-             ("recoveryHold", match recovery_reason with Some reason -> `String reason | None -> `Null);
+             ("recoveryRequested", `Bool recovery_enabled_value);
+             ("recoveryEnabled", `Bool (recovery_enabled_value && effective_recovery_reason = None));
+             ("recoveryConfigurationValid", `Bool (Result.is_ok recovery_configuration));
+             ("recoveryHold", match effective_recovery_reason with Some reason -> `String reason | None -> `Null);
              ("recoveryCadenceSeconds", `Int 60);
              ("monitor", monitor);
              ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool unit_active);
@@ -797,45 +842,240 @@ let doctor_cmd json =
       (if api_ready then "ready" else "degraded")
       (Yojson.Safe.to_string permission_ceiling)
       (Yojson.Safe.to_string state)
-      (if recovery_enabled_value then "enabled" else "disabled")
+      (match effective_recovery_reason with Some reason -> "held: " ^ reason
+       | None -> if recovery_enabled_value then "enabled" else "disabled by operator")
       (if unit_active then "active" else "inactive");
   0
 
 let doctor_term = as_command (const doctor_cmd $ json_flag)
 
+type repair_change =
+  | Create_directory of string
+  | Tighten_mode of string * int * Unix.stats
+  | Remove_stale_status of string * Unix.stats
+
+let repair_change_json = function
+  | Create_directory path -> `Assoc [ ("action", `String "create-directory"); ("path", `String path); ("mode", `String "0700") ]
+  | Tighten_mode (path, mode, _) -> `Assoc [ ("action", `String "tighten-mode"); ("path", `String path); ("mode", `String (Printf.sprintf "%04o" mode)) ]
+  | Remove_stale_status (path, _) -> `Assoc [ ("action", `String "remove-stale-status"); ("path", `String path) ]
+
+let same_inode a b = a.Unix.st_dev = b.Unix.st_dev && a.Unix.st_ino = b.Unix.st_ino
+
+let rec checked_directory_tree path =
+  if path = "/" || path = "." || path = "" then Ok ()
+  else match Unix.lstat path with
+    | st when st.Unix.st_kind = Unix.S_DIR -> checked_directory_tree (Filename.dirname path)
+    | _ -> Error (path ^ " is not a real directory; symlinks are refused")
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> checked_directory_tree (Filename.dirname path)
+    | exception _ -> Error (path ^ " cannot be inspected safely")
+
+let plan_private_path ~directory path =
+  match checked_directory_tree (Filename.dirname path) with
+  | Error _ as error -> error
+  | Ok () ->
+      try match Unix.lstat path with
+        | st when st.Unix.st_uid <> Unix.geteuid () -> Error (path ^ " is not owned by this user")
+        | st when st.Unix.st_kind <> (if directory then Unix.S_DIR else Unix.S_REG)
+                  || (not directory && st.Unix.st_nlink <> 1) ->
+            Error (path ^ " has an unsafe type or hard links; preserve it for manual inspection")
+        | st ->
+            let mode = if directory then 0o700 else 0o600 in
+            Ok (if st.Unix.st_perm land 0o7777 = mode then [] else [ Tighten_mode (path, mode, st) ])
+      with Unix.Unix_error (Unix.ENOENT, _, _) -> Ok (if directory then [ Create_directory path ] else [])
+         | _ -> Error (path ^ " cannot be inspected safely")
+
+let status_is_proven_stale path =
+  match C2c_t3_systemd.read_owned_regular ~max_bytes:65536 path with
+  | Error _ as error -> error
+  | Ok text ->
+      try
+        let fields = match Yojson.Safe.from_string text with `Assoc fields -> fields | _ -> [] in
+        match List.assoc_opt "environmentId" fields, List.assoc_opt "pid" fields,
+              List.assoc_opt "pidGeneration" fields with
+        | Some (`String env), Some (`Int pid), Some (`Int generation)
+            when env = environment_id_of_home (t3_home ()) && pid > 0 && generation >= 0 ->
+            (match C2c_pid_identity.read_pid_generation pid with
+             | C2c_pid_identity.Absent -> Ok true
+             | C2c_pid_identity.Generation actual -> Ok (generation <> actual)
+             | C2c_pid_identity.Unreadable -> Error "monitor PID generation is unreadable; retain its status")
+        | _ -> Error "monitor status has ambiguous ownership; retain it for manual inspection"
+      with _ -> Error "monitor status is malformed; retain it for manual inspection"
+
+let apply_repair_change change =
+  try match change with
+    | Create_directory path ->
+        (match checked_directory_tree path with
+         | Error _ as error -> error
+         | Ok () -> C2c_t3_systemd.private_mkdir_p path; Ok ())
+    | Tighten_mode (path, mode, expected) ->
+        let fd = if expected.Unix.st_kind = Unix.S_REG then C2c_t3_systemd.open_regular_nofollow path
+          else Unix.openfile path [ Unix.O_RDONLY; Unix.O_NONBLOCK; Unix.O_CLOEXEC ] 0 in
+        Fun.protect ~finally:(fun () -> Unix.close fd) (fun () ->
+          let actual = Unix.fstat fd in
+          if not (same_inode expected actual) || actual.Unix.st_uid <> Unix.geteuid ()
+             || actual.Unix.st_kind <> expected.Unix.st_kind then
+            Error (path ^ " changed during repair; nothing was overwritten")
+          else (Unix.fchmod fd mode; Ok ()))
+    | Remove_stale_status (path, expected) ->
+        (match status_is_proven_stale path with
+         | Ok true when same_inode expected (Unix.lstat path) -> Unix.unlink path; Ok ()
+         | _ -> Error "monitor status changed or no longer has proven-stale ownership; preserve it")
+  with _ -> Error "owned metadata repair could not complete safely"
+
+(* This is the same lock inode and POSIX lock used by State.open_state. Never
+   unlink it, and never open/close a second fd for it while holding the lock:
+   closing any fd for a POSIX lock inode releases this process's locks. *)
+let acquire_repair_lock ~dry_run () =
+  let path = state_dir () // "t3-state.lock" in
+  try
+    let before = try Some (Unix.lstat path) with Unix.Unix_error (Unix.ENOENT, _, _) -> None in
+    if dry_run && before = None then Ok None
+    else
+      let fd = match before with
+        | None -> Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_EXCL; Unix.O_CLOEXEC ] 0o600
+        | Some st when st.Unix.st_kind = Unix.S_REG && st.Unix.st_uid = Unix.geteuid () && st.Unix.st_nlink = 1 ->
+            Unix.openfile path [ Unix.O_RDWR; Unix.O_NONBLOCK; Unix.O_CLOEXEC ] 0
+        | Some _ -> failwith "unsafe singleton" in
+      let checked =
+        let actual = Unix.fstat fd in
+        actual.Unix.st_kind = Unix.S_REG && actual.Unix.st_uid = Unix.geteuid ()
+        && actual.Unix.st_nlink = 1 && same_inode actual (Unix.lstat path)
+        && (match before with None -> true | Some before -> same_inode before actual) in
+      if not checked then (Unix.close fd; Error "singleton path changed or has unsafe ownership")
+      else
+        (try Unix.lockf fd Unix.F_TLOCK 0;
+             if not dry_run then Unix.fchmod fd 0o600;
+             Ok (Some fd)
+         with _ -> Unix.close fd; Error "live connector owns the singleton; stop only this connector before repairing private metadata")
+  with _ -> Error "singleton cannot be acquired safely; no metadata was replaced"
+
+let verify_owner_routes ~c2c_path () =
+  let ( let* ) = Result.bind in
+  let monitor = read_service_status () in
+  let* pid = match monitor with
+    | `Assoc fields when List.assoc_opt "running" fields = Some (`Bool true) ->
+        (match List.assoc_opt "pid" fields with Some (`Int pid) -> Ok pid | _ -> Error "monitor has no owner PID")
+    | _ -> Error "no live connector sweep to reconcile aliases; run c2c t3 service or c2c t3 service install" in
+  let* () = C2c_t3_systemd.native_readiness ~c2c_path ~t3_home:(t3_home ())
+      ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) ~pid () in
+  let* snapshot = State.open_read_only ~environment_id:(environment_id_of_home (t3_home ())) ~dir:(state_dir ()) ()
+    |> Result.map_error State.open_error_to_string in
+  let* registry_text = C2c_t3_systemd.read_owned_regular ~max_bytes:(8 * 1024 * 1024)
+      (service_broker_root () // "registry.json") in
+  let* registrations =
+    try match Yojson.Safe.from_string registry_text with
+      | `List rows -> Ok (List.map C2c_mcp.Broker.registration_of_json rows)
+      | _ -> Error "broker registry is malformed; preserve it for its owner"
+    with _ -> Error "broker registry cannot be inspected; preserve it for its owner" in
+  let holds = State.read_only_holds snapshot in
+  let mappings = State.read_only_mappings snapshot in
+  let active mapping = mapping.State.tombstone = None && not (List.mem_assoc mapping.State.thread_id holds) in
+  let generation = match C2c_pid_identity.read_pid_generation pid with C2c_pid_identity.Generation n -> Some n | _ -> None in
+  let owned mapping (registration : C2c_mcp.registration) =
+    registration.session_id = Service.service_session_id ~environment_id:(environment_id_of_home (t3_home ())) ~thread_id:mapping.State.thread_id
+    && registration.registered_by = Some Service.service_registered_by
+    && registration.client_type = Some "t3" in
+  let valid mapping =
+    match List.find_opt (fun (row : C2c_mcp.registration) -> String.lowercase_ascii row.alias = String.lowercase_ascii mapping.State.alias) registrations with
+    | None -> not (active mapping)
+    | Some row -> if active mapping then owned mapping row && row.pid = Some pid && row.pid_start_time = generation
+                  else not (owned mapping row) in
+  if not (List.for_all valid mappings) then
+    Error "owned alias drift remains; wait for the connector's next healthy sweep, then rerun repair (foreign registrations are preserved)"
+  else match Relay_activation.resolve () with
+    | Relay_activation.Relay_inactive | Relay_activation.Relay_disabled _ -> Ok "verified owner sweep; local routes (relay inactive)"
+    | Relay_activation.Relay_active _ ->
+        (match C2c_relay_connector.read_connector_state (service_broker_root ()) with
+         | Some state when Relay_doctor.connector_bridge_live ~state:(Some state) ~now:(now ())
+                           && state.C2c_relay_connector.cs_errors = []
+                           && List.for_all (fun mapping ->
+                             List.assoc_opt mapping.State.alias state.cs_sessions =
+                             Some (Service.service_session_id ~environment_id:(environment_id_of_home (t3_home ())) ~thread_id:mapping.thread_id))
+                             (List.filter active mappings) -> Ok "verified owner sweep and recent relay lease reconciliation"
+         | _ -> Error "relay lease reconciliation is incomplete; run c2c doctor --relay and use the existing relay-connect owner, then rerun repair")
+
 let repair_cmd dry_run json =
-  let paths = [ config_dir (); state_dir () ] in
-  let actions = List.filter (fun path -> not (Sys.file_exists path)) paths in
-  let unit_missing = not (Sys.file_exists (C2c_t3_systemd.unit_path ())) in
-  let result, exit_code =
-    if dry_run then
-      (`Assoc [ ("dryRun", `Bool true); ("wouldCreate", `List (List.map (fun p -> `String p) actions)); ("wouldRepairUnit", `Bool unit_missing); ("credentialPreserved", `Bool true) ], 0)
-    else begin
-      let repair_errors =
-        List.filter_map
-          (fun path -> match repair_private_dir path with Ok () -> None | Error e -> Some e)
-          paths
-      in
-      if repair_errors <> [] then begin
-        let message = String.concat "; " repair_errors in
-        (`Assoc [ ("dryRun", `Bool false); ("error", `String message); ("credentialPreserved", `Bool true) ], 1)
-      end else
-      let unit_result =
-        if not unit_missing then "present"
-        else
-          match C2c_t3_systemd.c2c_path () with
-          | Error error -> "held: " ^ error
-          | Ok c2c_path ->
+  let planned = ref [] and applied = ref [] and holds = ref [] in
+  let live_owner = ref false in
+  let hold reason = holds := reason :: !holds in
+  let inspect directory path = match plan_private_path ~directory path with
+    | Ok changes -> planned := !planned @ changes | Error reason -> hold reason in
+  List.iter (inspect true) [ config_dir (); state_dir () ];
+  List.iter (inspect false) [ recovery_config_path (); state_dir () // "state.json"; service_status_path () ];
+  (match Unix.lstat (service_status_path ()) with
+   | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+   | exception _ -> hold "monitor status cannot be inspected"
+   | st -> (match status_is_proven_stale (service_status_path ()) with
+       | Ok true -> planned := List.filter (function Tighten_mode (path, _, _) -> path <> service_status_path () | _ -> true) !planned
+                              @ [ Remove_stale_status (service_status_path (), st) ]
+       | Ok false -> () | Error reason -> hold reason));
+  let executable = C2c_t3_systemd.c2c_path () in
+  let unit_plan = Result.bind executable (fun c2c_path ->
+    C2c_t3_systemd.unit_plan ~c2c_path ~t3_home:(t3_home ()) ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) ()) in
+  (match unit_plan with Error reason -> hold reason | Ok _ -> ());
+  let unit_result = ref "not verified" and routes_result = ref "not verified" in
+  if !holds = [] then begin
+    (* A missing directory cannot contain a live owner. Create only that
+       boundary before acquiring the singleton; every other change is locked. *)
+    if not dry_run && not (Sys.file_exists (state_dir ())) then
+      (match apply_repair_change (Create_directory (state_dir ())) with
+       | Ok () -> applied := [ Create_directory (state_dir ()) ]
+       | Error reason -> hold reason);
+    if !holds = [] then
+      match acquire_repair_lock ~dry_run () with
+      | Error reason ->
+          live_owner := true;
+          if !planned <> [] || unit_plan <> Ok `Current then hold reason
+      | Ok lock ->
+          Fun.protect ~finally:(fun () -> Option.iter C2c_singleton_lock.release lock) (fun () ->
+            if not dry_run then List.iter (fun change ->
+              if not (List.mem change !applied) then
+                match apply_repair_change change with
+                | Ok () -> applied := !applied @ [ change ] | Error reason -> hold reason) !planned;
+            if not dry_run && Sys.file_exists (state_dir () // "state.json")
+               && Result.is_error (State.open_read_only
+                    ~environment_id:(environment_id_of_home (t3_home ())) ~dir:(state_dir ()) ()) then
+              hold "state is malformed, foreign or unsafe; its bytes are preserved for manual reconciliation";
+            if not dry_run && Result.is_error (configured_recovery ()) then
+              hold "recovery configuration is invalid or unsafe; its bytes are preserved for manual correction")
+  end;
+  if dry_run then begin
+    unit_result := (match unit_plan with Ok `Current -> "would verify owned unit and readiness" | Ok _ -> "would repair owned unit and verify readiness" | Error _ -> "held");
+    routes_result := "would verify the live owner's alias sweep and activated relay leases; no short-lived registrations"
+  end else if !holds = [] then begin
+    (match executable with
+     | Error reason -> hold reason
+     | Ok c2c_path ->
+         (match unit_plan with
+          | Ok `Current when C2c_t3_systemd.unit_is_active () ->
+              (* Do not rewrite a correct live unit just to inspect it. *)
+              (match C2c_t3_systemd.unit_main_pid () with
+               | Some pid -> (match C2c_t3_systemd.native_readiness ~c2c_path ~t3_home:(t3_home ()) ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) ~pid () with
+                   | Ok () -> unit_result := "ready" | Error reason -> unit_result := "held: " ^ reason; hold reason)
+               | None -> hold "active owned unit has no verifiable MainPID")
+          | Ok _ when !live_owner ->
+              hold "foreground connector owns the singleton; preserve it and stop only that connector before enabling supervision"
+          | Ok _ ->
               (match C2c_t3_systemd.install ~c2c_path ~t3_home:(t3_home ()) ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) () with
-               | C2c_t3_systemd.Installed _ -> "repaired"
-               | C2c_t3_systemd.Skipped reason -> "held: " ^ reason
-               | C2c_t3_systemd.Failed reason -> "held: " ^ reason)
-      in
-      (`Assoc [ ("dryRun", `Bool false); ("created", `List (List.map (fun p -> `String p) actions)); ("unit", `String unit_result); ("credentialPreserved", `Bool true) ], 0)
-    end
-  in
+               | C2c_t3_systemd.Installed _ -> unit_result := "ready"
+               | C2c_t3_systemd.Skipped reason | C2c_t3_systemd.Failed reason -> unit_result := "held: " ^ reason; hold reason)
+          | Error _ -> ());
+         (match verify_owner_routes ~c2c_path () with
+          | Ok value -> routes_result := value
+          | Error reason -> routes_result := "held: " ^ reason; hold reason))
+  end;
+  let unit_actions = match unit_plan with
+    | Ok `Missing -> [ `Assoc [ ("action", `String "install-owned-unit"); ("path", `String (C2c_t3_systemd.unit_path ())) ] ]
+    | Ok `Drifted -> [ `Assoc [ ("action", `String "repair-owned-unit"); ("path", `String (C2c_t3_systemd.unit_path ())) ] ]
+    | _ -> [] in
+  let result = `Assoc [ ("complete", `Bool (!holds = [])); ("dryRun", `Bool dry_run);
+    ("planned", `List (List.map repair_change_json !planned @ unit_actions));
+    ("applied", `List (List.map repair_change_json !applied));
+    ("holds", `List (List.map (fun s -> `String s) (List.rev !holds)));
+    ("unit", `String !unit_result); ("routes", `String !routes_result);
+    ("credentialPreserved", `Bool true); ("mailPreserved", `Bool true) ] in
   if json then print_json result else Printf.printf "%s\n" (Yojson.Safe.to_string result);
-  exit_code
+  if !holds = [] then 0 else 1
 
 let repair_term =
   let dry_run = Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Report safe repairs without changing files.") in
@@ -853,16 +1093,18 @@ let install_cmd dry_run =
 let install_term = as_command (const install_cmd $ Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Show the unit path without writing or enabling it."))
 
 let service_stop_cmd dry_run =
-  let () =
-    if dry_run then Printf.printf "would stop and disable %s\n" C2c_t3_systemd.unit_name
-    else
-      match C2c_t3_systemd.stop () with
-      | C2c_t3_systemd.Systemctl_ok -> Printf.printf "stopped %s\n" C2c_t3_systemd.unit_name
-      | C2c_t3_systemd.Systemctl_failed e -> print_error e
-  in
-  0
+  match C2c_t3_systemd.stop ~dry_run ~t3_home:(t3_home ())
+          ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) () with
+  | C2c_t3_systemd.Systemctl_ok ->
+      Printf.printf "%s %s\n" (if dry_run then "would stop and disable" else "stopped") C2c_t3_systemd.unit_name; 0
+  | C2c_t3_systemd.Systemctl_failed e -> print_error e; 1
 
-let service_uninstall_cmd dry_run = C2c_t3_systemd.uninstall ~dry_run (); Printf.printf "%s %s (state and queued mail retained)\n" (if dry_run then "would remove" else "removed") C2c_t3_systemd.unit_name; 0
+let service_uninstall_cmd dry_run =
+  match C2c_t3_systemd.uninstall ~dry_run ~t3_home:(t3_home ())
+          ~config_dir:(config_dir ()) ~state_dir:(state_dir ()) () with
+  | C2c_t3_systemd.Systemctl_ok ->
+      Printf.printf "%s %s (state and queued mail retained)\n" (if dry_run then "would remove" else "removed") C2c_t3_systemd.unit_name; 0
+  | C2c_t3_systemd.Systemctl_failed e -> print_error e; 1
 
 let recovery_group =
   Cmdliner.Cmd.group ~default:recovery_status_term
@@ -876,7 +1118,7 @@ let service_group : unit Cmdliner.Cmd.t =
     (Cmdliner.Cmd.info "service" ~doc:"Run and supervise the native connector for one local T3 Code instance.")
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "install" ~doc:"Install, enable, and start the owned user-systemd unit.") install_term;
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor" ~doc:"Read-only redacted readiness and health report.") doctor_term;
-      Cmdliner.Cmd.v (Cmdliner.Cmd.info "repair" ~doc:"Conservatively repair owned directories; credentials and mail are preserved.") repair_term;
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "repair" ~doc:"Repair owned metadata and unit drift, and verify the existing route owners; credentials and mail are preserved.") repair_term;
       recovery_group;
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop and disable the owned user-systemd unit.") (as_command (const service_stop_cmd $ Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Do not call systemctl.")));
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "uninstall" ~doc:"Remove the owned unit while retaining connector state and queued mail.") (as_command (const service_uninstall_cmd $ Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Do not remove the unit."))) ]

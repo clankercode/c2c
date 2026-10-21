@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
@@ -82,7 +82,11 @@ async function exerciseServiceProof(options, fixture) {
   const env = { HOME: home, PATH: process.env.PATH, LANG: 'C.UTF-8',
     T3CODE_HOME: fixture.t3Home, C2C_T3_CONFIG_DIR: config, C2C_T3_STATE_DIR: stateDir,
     C2C_SESSIONS_BROKER_ROOT: broker, C2C_NO_AUTO_REGISTER: '1', C2C_T3_RECOVERY: '1' };
+  const expectedC2cHash = sha256(options.c2cBin);
+  const assertBinaryStable = () => assert.equal(sha256(options.c2cBin), expectedC2cHash,
+    'c2c binary changed during the proof; use a stable candidate');
   const cli = (args) => {
+    assertBinaryStable();
     try { return execFileSync(options.c2cBin, args, { env, cwd: root, encoding: 'utf8', timeout: 45_000, stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch { throw new Error('Native c2c fixture command failed (inspect private service log)'); }
   };
@@ -101,6 +105,7 @@ async function exerciseServiceProof(options, fixture) {
     service = undefined;
   };
   const startService = () => {
+    assertBinaryStable();
     const log = fs.openSync(path.join(root, 'c2c-service.log'), 'a', 0o600);
     try { service = spawn(options.c2cBin, ['t3', 'service', '--foreground'], { env, cwd: root, stdio: ['ignore', log, log] }); }
     finally { fs.closeSync(log); }
@@ -304,6 +309,50 @@ async function exerciseServiceProof(options, fixture) {
       m.thread_id === state.cases.disabled.threadId && !m.tombstone), 'disabled target enrolled');
     assert.equal(continuations(await runner.snapshot('disabled')).length, 0, 'durable disable');
     proof.cases.disable = true;
+    proof.stage = 'recovery-readiness-holds';
+    // Alter only this disposable fixture's runtime version metadata, keeping
+    // its PID/listener identity and stock T3 executable untouched. This tests
+    // the version gate, not compatibility with a real different T3 release.
+    const runtimeFile = path.join(fixture.t3Home, 'userdata', 'server-runtime.json');
+    assert(fs.realpathSync(runtimeFile).startsWith(`${fs.realpathSync(root)}${path.sep}`), 'owned fixture metadata only');
+    const originalRuntime = fs.readFileSync(runtimeFile);
+    const runtimeMode = fs.statSync(runtimeFile).mode & 0o777;
+    const configFile = path.join(config, 'config.json');
+    const originalRecoveryConfig = fs.readFileSync(configFile);
+    try {
+      cli(['t3', 'service', 'recovery', 'enable']);
+      const runtime = JSON.parse(originalRuntime);
+      assert.equal(runtime.serverVersion, fixture.serverVersion);
+      runtime.serverVersion = '99.0.0-c2c-fixture-unverified';
+      fs.writeFileSync(runtimeFile, `${JSON.stringify(runtime)}\n`);
+      cli(['t3', 'service', '--once']);
+      assert.equal(status().healthy, false, 'requested recovery on unverified runtime degrades monitor');
+      assert.equal(status().recoveryEnabled, false);
+      assert(status().recoveryHold, 'unverified runtime reason is visible');
+      const heldDoctor = JSON.parse(cli(['t3', 'service', 'doctor', '--json']));
+      assert.equal(heldDoctor.healthy, false);
+      assert.equal(heldDoctor.recoveryRequested, true);
+      assert(heldDoctor.recoveryHold);
+      cli(['t3', 'service', 'recovery', 'disable']);
+      cli(['t3', 'service', '--once']);
+      assert.equal(status().healthy, true, 'intentional recovery disable remains a valid completed sweep');
+      assert.equal(status().recoveryHold, null);
+      fs.writeFileSync(runtimeFile, originalRuntime);
+      fs.writeFileSync(configFile, '{malformed-fixture-config\n');
+      cli(['t3', 'service', '--once']);
+      assert.equal(status().healthy, false, 'malformed recovery configuration degrades monitor');
+      const invalidDoctor = JSON.parse(cli(['t3', 'service', 'doctor', '--json']));
+      assert.equal(invalidDoctor.healthy, false);
+      assert.equal(invalidDoctor.recoveryConfigurationValid, false);
+      assert(invalidDoctor.recoveryHold);
+      assert.equal(continuations(await runner.snapshot('disabled')).length, 0, 'configuration holds never submit Continue');
+      proof.cases.readiness = { unverifiedRuntimeMetadataHeld: true, explicitDisableWorks: true,
+        malformedRecoveryConfigHeld: true, differentT3ReleaseTested: false };
+    } finally {
+      fs.writeFileSync(runtimeFile, originalRuntime);
+      fs.chmodSync(runtimeFile, runtimeMode);
+      fs.writeFileSync(configFile, originalRecoveryConfig);
+    }
     proof.stage = 'retirement-and-repair';
     const retired = mappingFor('idle');
     const retiredRegistration = afterRegistrations.find((row) => row.alias === retired.alias);
@@ -319,11 +368,21 @@ async function exerciseServiceProof(options, fixture) {
     const credentialHash = sha256(path.join(config, 'credential.json'));
     const stateHash = sha256(path.join(stateDir, 'state.json'));
     fs.chmodSync(config, 0o755);
-    cli(['t3', 'service', 'repair', '--json']);
+    assertBinaryStable();
+    const repaired = spawnSync(options.c2cBin, ['t3', 'service', 'repair', '--json'],
+      { env, cwd: root, encoding: 'utf8', timeout: 45_000, stdio: ['ignore', 'pipe', 'pipe'] });
+    assert(!repaired.error && repaired.signal === null && [0, 1].includes(repaired.status), 'repair returns structured outcome');
+    const repair = JSON.parse(repaired.stdout);
+    assert.equal(repair.credentialPreserved, true);
+    assert.equal(repair.mailPreserved, true);
+    assert.equal(repair.complete, repaired.status === 0, 'partial repair cannot report successful readiness');
+    assert(Array.isArray(repair.holds));
+    if (!repair.complete) assert(repair.holds.length > 0, 'headless fixture exposes incomplete supervision or routes');
     assert.equal(fs.statSync(config).mode & 0o777, 0o700, 'repair private permissions');
     assert.equal(sha256(path.join(config, 'credential.json')), credentialHash, 'repair preserves credential');
     assert.equal(sha256(path.join(stateDir, 'state.json')), stateHash, 'repair preserves journal and tombstones');
-    proof.cases.retirementAndRepair = { tombstone: true, pendingMailPreserved: true, credentialPreserved: true };
+    proof.cases.retirementAndRepair = { tombstone: true, pendingMailPreserved: true, credentialPreserved: true,
+      repairCompleted: repair.complete, repairHoldCount: repair.holds.length };
     const holds = readPrivate(path.join(stateDir, 'state.json')).holds;
     assert(holds.some((hold) => hold.thread_id === state.cases['full-access'].launch.threadId), 'permission-ineligible root has durable hold');
     proof.cases.permissionHold = true;
@@ -345,6 +404,7 @@ async function exerciseServiceProof(options, fixture) {
     proof.cases.rateLimit = { submitted: submissions.length, minimumSpacingSeconds: Math.min(...gaps),
       providerReceipts: receivedAt.length, providerMinimumSpacingMs: Math.min(...receiptGaps) };
     proof.journal = { pending: journal.journal.length, acked: journal.acked.length };
+    assertBinaryStable();
     proof.completedAt = new Date().toISOString();
     return proof;
   } catch (error) {
