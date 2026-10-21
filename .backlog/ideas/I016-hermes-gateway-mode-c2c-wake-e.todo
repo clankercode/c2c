@@ -1,0 +1,128 @@
+---
+complexity: medium
+created_at: "2026-10-21T02:14:56Z"
+depends_on: []
+estimate_hours: 10
+id: I016
+priority: medium
+status: pending
+tags:
+    - hermes
+    - gateway
+    - wake
+    - research
+title: 'Hermes gateway-mode c2c: wake existing Telegram vs new API task (research)'
+updated_at: "2026-10-21T02:14:56Z"
+---
+# Hermes gateway-mode c2c (research only)
+
+**Research only.** No implementation, plugin, OCaml, or config in this idea.
+No phases/tasks. Full evidence:
+`.collab/research/2026-10-21T01-34-00Z-hermes-gateway-c2c-support.md`
+
+## Goal
+
+Record how (and whether) c2c can **wake** a Hermes agent that is running as a
+**gateway** (Telegram / Discord / …), as distinct from spawning a **new**
+API-server / webhook / A2A task. Preserve B098 (bus, never RPC), the peek →
+inject → drain-on-success contract, and plugin-first Hermes (no `c2c start
+hermes`).
+
+## Current c2c plugin (this repo @ 56a34012)
+
+- Plugin-first under `~/.hermes/plugins/c2c/`: tools, slash commands,
+  `on_session_start` identity, `pre_llm_call` drain, daemon `BrokerWatcher`
+  (stat 2s / safety 10s).
+- Identity is **process-global**. Session id pinned before any `c2c` call
+  (`hermes-*` only if inherited). Alias from whoami or `hermes-<hash>`.
+  `on_session_start` fires on the **first turn**, not at launch — no alias
+  until someone speaks.
+- Wake = `ctx.inject_message` after peek. Drain only on True. Gateway today
+  is **NONE, not lossy**.
+- B098 envelope + U+2039 sanitization already in `delivery.py`.
+
+## Upstream vs this machine
+
+| Tree | SHA | `inject_message` |
+|---|---|---|
+| Local `~/.hermes/hermes-agent` | `0044876a` (2026-08-02) | CLI-only; gateway always False |
+| GitHub `NousResearch/hermes-agent` main | `0b8dee00` (2026-10-21) | `session_key=` / `origin=` + `allow_gateway_injection` |
+
+Design against **upstream**, version-gate the old 2-arg CLI-only signature.
+
+## New API task vs wake existing Telegram
+
+**Wake existing Telegram (what operators mean):** plugin
+`inject_message(..., session_key=)` or `origin={platform, chat_id, …}` into a
+chat that already has a committed human message. Internal event, queued if
+busy, `allow_gateway_control=False`, skips pairing. Requires
+`plugins.entries.c2c.allow_gateway_injection: true`.
+
+**Not a Telegram wake:**
+
+- API server `X-Hermes-Session-Id` of a messaging session → HTTP **409**
+  `permission_denied` (API cannot bind a foreign surface).
+- Webhook → new `webhook:{route}:{delivery_id}` session (one-shot).
+- A2A → session keyed by `contextId` (`a2a:{peer}`), not `telegram:<chat>`.
+- Gateway WS `prompt.submit` → local CLI/TUI sessions, needs operator creds
+  (≈ forbidden `c2c start hermes`).
+- Keyless `inject_message()` from `BrokerWatcher` (a **timer thread**) →
+  refused unless exactly one attached classic CLI session exists.
+
+So: **even after upgrading Hermes, today's watcher cannot wake Telegram**
+without passing `session_key`/`origin`. That is the actual work.
+
+## Identity / routing / lifecycle
+
+Gateway = one process, N chats. Current plugin = one alias, one watcher, one
+inbox. v1 should be a **home chat** (configured or first Telegram
+`on_session_start`), one c2c alias. Per-chat aliases later. Cold start still
+needs one human message in that chat (origin path cannot *open* a chat).
+
+## Security (untrusted peers)
+
+- Keep peek-drain; never drain-first (`--ephemeral` has no archive).
+- Do not mint a Telegram session from peer mail.
+- Plugin injects are internal DATA, not `/approve`/`/stop`.
+- Add plugin-side ping-pong / rate cap (A2A uses `A2A_MAX_PINGPONG_TURNS=5`,
+  `A2A_RATE_LIMIT=60/min`). Watcher at 2s can otherwise start a turn every
+  tick.
+- Busy = queue, never interrupt an in-flight operator turn.
+- Webhook HMAC / A2A bearer / `API_SERVER_KEY` are for **out-of-process**
+  callers; worse than in-process `allow_gateway_injection`.
+- Relay peers remain untrusted DATA (existing skill / `docs/security/trust-model.md`).
+
+## Avenues
+
+| ID | Path | Telegram wake? | Use |
+|---|---|---|---|
+| **A** | Plugin `inject_message(session_key`/`origin)` + consent + home-chat | **Yes** (Hermes main) | **v1** |
+| B/C | Raw `handle_message` / `deliver_wake` | Yes, internal | Don't bypass PluginContext |
+| D | WS `prompt.submit` | Local only | No |
+| E | API steal Telegram session id | **409** | Forbidden |
+| F | API new session / `/v1/runs` | No | Optional later *different* peer |
+| G/H | Webhook / `deliver_only` Telegram | Notify or new run | Backstop only |
+| I | A2A as c2c transport | A2A session | Hermes↔Hermes without relay, not Telegram |
+| J | `c2c monitor` | No Monitor on gateway | No |
+| K | `pre_llm_call` drain | Activity only | Keep as complement |
+| L | Upstream `gateway_start` hook | Arm at boot | Nice-to-have |
+| M | Version-detect old vs new inject | Compat | **Required** |
+
+## Recommendation
+
+Implement **A + M** in a later claimed slice (not this idea): home-chat
+targeted inject, opt-in `allow_gateway_injection`, peek-drain preserved,
+ping-pong cap, refuse drain on False. Non-goals v1: API task peer, A2A
+transport, webhook sidecar, `c2c start hermes`, per-chat aliases, interrupting
+Telegram.
+
+Do **not** advertise “enable API server and POST a completion” as gateway c2c
+support.
+
+## Evidence pins
+
+- c2c: `/home/xertrov/src/c2c` `56a34012c0378191bc187fb957dcffdab1b4aa8e`
+- Local Hermes: `0044876a1169a7fc70d7c55ff9a5f49ca427870b` (stale)
+- Upstream Hermes main: `0b8dee00fafe975f10be40172322d0ccfabfa7f6`
+- Docs: a2a, api-server, webhooks, plugins, gateway-internals, gateway-local-sessions @ hermes-agent.nousresearch.com
+)
