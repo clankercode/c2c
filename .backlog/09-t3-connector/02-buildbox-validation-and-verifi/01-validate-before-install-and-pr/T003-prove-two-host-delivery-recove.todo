@@ -1,6 +1,6 @@
 ---
-claimed_at: "2026-10-20T01:38:11Z"
-claimed_by: cli-user
+claimed_at: "2026-10-21T13:39:06Z"
+claimed_by: codex-bison-swarm-yt7u
 completed_at: null
 complexity: high
 created_at: "2026-10-19T07:12:03Z"
@@ -9,12 +9,11 @@ depends_on:
 estimate_hours: 8
 id: P9.M2.E1.T003
 priority: high
-reason: Production relay.c2c.im lacks signed T3 peer-publication capability; isolated relay both directions pass, but public cross-host proof requires relay deployment outside this repository
-started_at: "2026-10-20T01:38:11Z"
-status: blocked
+started_at: "2026-10-21T13:39:06Z"
+status: in_progress
 tags: []
 title: Prove two-host delivery recovery and publish operator documentation
-updated_at: "2026-10-20T01:38:21Z"
+updated_at: "2026-10-21T13:39:06Z"
 ---
 
 # Prove two-host delivery recovery and publish operator documentation
@@ -53,3 +52,5 @@ Final serial review/validation lane after all implementation. Coordinate isolate
 Local direct delivery passed on both x-tuf and x-p35 with agent/mcp attribution, DATA framing and canonical c2c reply footer. A temporary isolated relay built from the same candidate passed both directions with unique nonces and transcript delivery. Recovery fixture/unit coverage passed and live 401 provider-auth failures correctly did not trigger Continue; a real model-availability outage was not reproduced.
 
 The configured production relay `https://relay.c2c.im` currently returns the older capability surface; the installed connector reports `relay lacks signed T3 peer-publication capability`, so service-owned T3 aliases cannot be made publicly routable there. This task remains blocked for the production cross-host proof until that relay is deployed with the signed T3 peer-publication endpoint. No public relay deployment was performed.
+
+2026-10-22 audit decision: one serial worktree lane for connector/footer corrections and final validation (shared service and CLI files). Prior evidence is partial: x-p35 just test failed because docker compose was missing, so its generated PASS receipt and resulting installation do NOT satisfy the gate. Revalidate all installed sources before any further install. T003 also lacks the complete integrated live matrix; the public relay rollout is one blocker, not the sole remaining work. Master push is authorized and Railway deploys automatically; no manual deploy or credential is required. Verify shared-broker reply scope, remote sender host preservation, and supported T3 0.1.1 behavior before completing.
