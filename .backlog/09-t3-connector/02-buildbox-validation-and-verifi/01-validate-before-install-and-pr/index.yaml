@@ -6,9 +6,9 @@ id: P9.M2.E1
 locked: false
 name: Validate before install and prove running service
 stats:
-    blocked: 1
+    blocked: 0
     done: 2
-    in_progress: 0
+    in_progress: 1
     pending: 0
     total: 3
 status: pending
