@@ -448,6 +448,10 @@ let apply_plan ~owner ~state ~plan =
   let published = ref [] in
   let held = ref [] in
   let errors = ref [] in
+  let record_write = function
+    | Ok () -> ()
+    | Error error -> errors := ("cannot persist lifecycle hold: " ^ error) :: !errors
+  in
   (* A prior crash may have removed the durable route after the state write
      but before broker cleanup. Reconcile any service-owned tombstone on every
      pass; never touch a foreign row. *)
@@ -455,21 +459,21 @@ let apply_plan ~owner ~state ~plan =
   |> List.filter (fun (mapping : State.mapping) -> mapping.tombstone <> None)
   |> List.iter (fun mapping ->
        match unpublish_mapping ~owner ~mapping with
-       | Ok () -> ignore (State.clear_hold state ~thread_id:mapping.thread_id)
+       | Ok () -> record_write (State.clear_hold state ~thread_id:mapping.thread_id)
        | Error message -> errors := message :: !errors);
   List.iter
     (fun candidate ->
       match active_mapping ~environment_id:owner.environment_id state candidate with
       | Error message ->
-          ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:message);
+          record_write (State.hold state ~thread_id:candidate.thread.thread_id ~reason:message);
           held := (candidate, message) :: !held
       | Ok mapping ->
           (match publish_mapping ~owner ~mapping with
            | Ok () ->
-               ignore (State.clear_hold state ~thread_id:candidate.thread.thread_id);
+               record_write (State.clear_hold state ~thread_id:candidate.thread.thread_id);
                published := { candidate with mapping = Some mapping } :: !published
            | Error message ->
-               ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:message);
+               record_write (State.hold state ~thread_id:candidate.thread.thread_id ~reason:message);
                held := ({ candidate with mapping = Some mapping }, message) :: !held))
     plan.routable;
   List.iter
@@ -484,16 +488,16 @@ let apply_plan ~owner ~state ~plan =
       in
       (match mapping_result with
        | Error message ->
-           ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:reason);
+           record_write (State.hold state ~thread_id:candidate.thread.thread_id ~reason:reason);
            held := (candidate, reason ^ ": " ^ message) :: !held
        | Ok mapping ->
            (match unpublish_mapping ~owner ~mapping with
             | Error message ->
-                ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:reason);
+                record_write (State.hold state ~thread_id:candidate.thread.thread_id ~reason:reason);
                 errors := message :: !errors;
                 held := ({ candidate with mapping = Some mapping }, reason) :: !held
             | Ok () ->
-                ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason);
+                record_write (State.hold state ~thread_id:candidate.thread.thread_id ~reason);
                 held := ({ candidate with mapping = Some mapping }, reason) :: !held)))
     plan.unroutable;
   let retired = ref [] in
@@ -504,7 +508,7 @@ let apply_plan ~owner ~state ~plan =
       | Ok () ->
           (match State.tombstone state ~thread_id:mapping.thread_id ~reason with
            | Ok () ->
-               ignore (State.clear_hold state ~thread_id:mapping.thread_id);
+               record_write (State.clear_hold state ~thread_id:mapping.thread_id);
                retired := (mapping, reason) :: !retired
            | Error message -> errors := message :: !errors))
     plan.retire;

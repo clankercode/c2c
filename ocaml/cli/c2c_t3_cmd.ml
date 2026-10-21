@@ -502,7 +502,7 @@ let service_owner ~environment_id ~broker () =
   { Service.environment_id; broker; pid = Some (Unix.getpid ());
     pid_start_time = C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ())); cwd = Some (Sys.getcwd ()); opaque_host_id = None }
 
-let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
+let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
   let broker = C2c_mcp.Broker.create ~root:(service_broker_root ()) in
   let owner = service_owner ~environment_id:(environment_id runtime) ~broker () in
   let recovery =
@@ -529,7 +529,10 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
       let plan = Service.plan_reconciliation ~scan ~mappings:(State.mappings state) ~point_reads () in
            let applied = Service.apply_plan ~owner ~state ~plan in
            let mode = match mode_of_string mode with Ok value -> value | Error _ -> `Auto in
-           List.iter (fun candidate -> ignore (Service.accept_inbox ~mode ~cross_repo ~owner ~state ~mapping:(Option.get candidate.Service.mapping) ())) applied.published;
+           (* All enrolled aliases live in the shared sessions broker, regardless
+              of the provider worktree. Replies must explicitly select that
+              broker too; an operator flag cannot determine the message scope. *)
+           List.iter (fun candidate -> ignore (Service.accept_inbox ~mode ~cross_repo:true ~owner ~state ~mapping:(Option.get candidate.Service.mapping) ())) applied.published;
            let thread_ids = List.map (fun candidate -> candidate.Service.thread.thread_id) applied.published in
            let _recovery_result =
              run_lwt_exn (Recovery.sweep ~enabled:recovery ~client ~state ~environment_id:owner.environment_id
@@ -574,10 +577,56 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
             | Ok () -> Ok (scan, applied)
             | Error reason -> Error reason)
 
+(* A private operational snapshot is separate from routing/dedupe state. It
+   cannot authorize delivery. Exact PID generation prevents a prior owner's
+   final heartbeat from looking like a running monitor after a restart. *)
+let service_status_path () = state_dir () // "service-status.json"
+
+let write_service_status ~started_at ~finished_at ~interval ~recovery ~healthy =
+  let json_float = function None -> `Null | Some value -> `Float value in
+  let generation = C2c_pid_identity.read_pid_generation (Unix.getpid ()) in
+  let fields =
+    [ ("environmentId", `String (environment_id_of_home (t3_home ())));
+      ("pid", `Int (Unix.getpid ()));
+      ("pidGeneration", match generation with C2c_pid_identity.Generation n -> `Int n | _ -> `Null);
+      ("lastSweepAt", `Float started_at);
+      ("completedAt", json_float finished_at);
+      ("nextSweepAt", json_float (Option.map (fun at -> at +. interval) finished_at));
+      ("intervalSeconds", `Float interval); ("recoveryEnabled", `Bool recovery);
+      ("healthy", `Bool healthy) ]
+  in
+  match C2c_io.write_file_atomic ~perm:0o600 (service_status_path ())
+          (Yojson.Safe.to_string (`Assoc fields) ^ "\n") with
+  | Ok () -> ()
+  | Error _ -> Printf.eprintf "warning: unable to persist T3 monitor status\n%!"
+
+let read_service_status () =
+  try
+    let filename = service_status_path () in
+    let st = Unix.lstat filename in
+    if st.Unix.st_kind <> Unix.S_REG || st.Unix.st_uid <> Unix.geteuid ()
+       || st.Unix.st_perm land 0o077 <> 0 || st.Unix.st_size > 65536 then
+      `Assoc [ ("running", `Bool false) ]
+    else match Yojson.Safe.from_file filename with
+    | `Assoc fields ->
+        let running =
+          match List.assoc_opt "environmentId" fields, List.assoc_opt "pid" fields,
+                List.assoc_opt "pidGeneration" fields with
+          | Some (`String env), Some (`Int pid), Some (`Int generation)
+              when env = environment_id_of_home (t3_home ()) ->
+              C2c_pid_identity.read_pid_generation pid = C2c_pid_identity.Generation generation
+          | _ -> false
+        in
+        `Assoc (("running", `Bool running) :: fields)
+    | _ -> `Assoc [ ("running", `Bool false) ]
+  with _ -> `Assoc [ ("running", `Bool false) ]
+
 let foreground_cmd foreground once interval mode cross_repo recovery_override =
   if not foreground && not once then Printf.eprintf "starting c2c T3 connector in foreground (Ctrl-C to stop)\n%!";
+  if not (Float.is_finite interval) || interval < 1. then
+    (print_error "service interval must be finite and at least one second"; exit 1);
   with_state (fun state ->
-    let rec loop first =
+    let rec loop () =
       let recovery =
         match configured_recovery () with
         | Ok configured -> Option.value recovery_override ~default:configured
@@ -588,17 +637,20 @@ let foreground_cmd foreground once interval mode cross_repo recovery_override =
             Printf.eprintf "warning: model-availability recovery disabled: %s\n%!" error;
             false
       in
-      let () =
+      let started_at = now () in
+      write_service_status ~started_at ~finished_at:None ~interval ~recovery ~healthy:false;
+      let healthy =
         match authorized ~rebind:true () with
-        | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error
+        | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error; false
         | Ok (client, runtime) ->
             (match service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery with
-             | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error
-             | Ok (_scan, _applied) -> ())
+             | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error; false
+             | Ok (scan, applied) -> scan.Service.complete && applied.Service.errors = [])
       in
-      if once then 0 else (ignore (Unix.select [] [] [] interval); loop false)
+      write_service_status ~started_at ~finished_at:(Some (now ())) ~interval ~recovery ~healthy;
+      if once then 0 else (ignore (Unix.select [] [] [] interval); loop ())
     in
-    loop true)
+    loop ())
 
 let foreground_term =
   let foreground = Cmdliner.Arg.(value & flag & info [ "foreground" ] ~doc:"Run in the foreground (the default for this command).") in
@@ -664,6 +716,7 @@ let doctor_cmd json =
              ("recoveryEnabled", `Bool recovery_enabled_value);
              ("recoveryHold", match recovery_reason with Some reason -> `String reason | None -> `Null);
              ("recoveryCadenceSeconds", `Int 60);
+             ("monitor", read_service_status ());
              ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool unit_active);
                                ("enabled", `Bool unit_enabled);
                                ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ]) ]

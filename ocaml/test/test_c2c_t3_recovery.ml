@@ -50,7 +50,8 @@ let test_matcher () =
 let test_version_gate () =
   Alcotest.(check bool) "measured version" true (R.supported_server_version (Some "0.1.0"));
   Alcotest.(check bool) "unknown version held" false (R.supported_server_version None);
-  Alcotest.(check bool) "new version held" false (R.supported_server_version (Some "0.1.1"));
+  Alcotest.(check bool) "measured 0.1.1 version" true (R.supported_server_version (Some "0.1.1"));
+  Alcotest.(check bool) "new version held" false (R.supported_server_version (Some "0.1.2"));
   Alcotest.(check (option string)) "known hold reason" None (R.version_hold_reason (Some "0.1.0"));
   Alcotest.(check bool) "unknown has hold reason" true
     (Option.is_some (R.version_hold_reason None))

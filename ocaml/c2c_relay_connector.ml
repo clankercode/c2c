@@ -2495,9 +2495,19 @@ module Relay_client = struct
     in
     post t "/heartbeat" ?alias (`Assoc fields)
 
+  (* Carry the source host on the wire so an ordinary `c2c send` reply
+     selects the relay instead of a coincidentally named local registration.
+     Sign with the original local alias: the opaque host is routing metadata,
+     not a second signing identity. Never replace an existing qualified route. *)
+  let sender_reply_route ~host_id from_alias =
+    if String.contains from_alias '@' || not (C2c_name.is_opaque_host_id host_id)
+    then from_alias
+    else from_alias ^ "@" ^ host_id
+
   let send t ~from_alias ~to_alias ~content ?message_id () =
+    let host_id = try Host_id.compute_host_hash () with _ -> "" in
     let base = [
-      ("from_alias", `String from_alias);
+      ("from_alias", `String (sender_reply_route ~host_id from_alias));
       ("to_alias", `String to_alias);
       ("content", `String content);
     ] in

@@ -2659,9 +2659,19 @@ let test_hung_sync_still_errors_without_a_recorded_error () =
   Alcotest.(check bool) "hung pass still reports erroring" true
     (info.Relay_state.conn_health = Relay_state.Health_erroring)
 
+let test_sender_reply_route () =
+  let route = Conn.Relay_client.sender_reply_route in
+  Alcotest.(check string) "bare sender becomes remotely replyable"
+    "t3-root@012345abcdef" (route ~host_id:"012345abcdef" "t3-root");
+  Alcotest.(check string) "existing host is preserved"
+    "peer@abcdef012345" (route ~host_id:"012345abcdef" "peer@abcdef012345");
+  Alcotest.(check string) "invalid host cannot create a route"
+    "peer" (route ~host_id:"bad host" "peer")
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
+    "reply routing", [ Alcotest.test_case "source host qualification" `Quick test_sender_reply_route ];
     "B210 rate-limit backoff", [
       Alcotest.test_case "strikes=0 is base interval" `Quick
         test_backoff_zero_strikes_is_base;

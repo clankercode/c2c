@@ -56,12 +56,12 @@ let availability_message message =
   in
   has_model && (unavailable || temporary_capacity) && not (any denied message)
 
-(* The root-error invariant was measured against the external T3 0.1.0
+(* The root-error invariant was measured against the external T3 0.1.0 and 0.1.1
    contract on both rollout hosts.  Unknown versions must hold recovery until
    their activity/error shape has been measured; normal c2c delivery remains
    available. *)
 let supported_server_version = function
-  | Some version -> String.trim version = "0.1.0"
+  | Some version -> List.mem (String.trim version) [ "0.1.0"; "0.1.1" ]
   | None -> false
 
 let version_hold_reason = function
