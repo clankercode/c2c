@@ -499,8 +499,20 @@ let save_inbound_rate_state broker_root state =
     Ok ()
   with exn -> Error (Printexc.to_string exn)
 
-let inbound_sender_policy policy sender =
+(* Existing bare-alias policies apply to the same sender after opaque host
+   qualification. An explicit host-specific override takes precedence. Keep
+   rate accounting under the selected policy key across the transition too. *)
+let inbound_sender_key policy sender =
   let key = String.lowercase_ascii sender in
+  if List.mem_assoc key policy.sender_overrides then key
+  else
+    let bare, host = C2c_name.split_opaque_host_id key in
+    match host with
+    | Some _ when List.mem_assoc bare policy.sender_overrides -> bare
+    | _ -> key
+
+let inbound_sender_policy policy sender =
+  let key = inbound_sender_key policy sender in
   match List.assoc_opt key policy.sender_overrides with
   | Some override -> override
   | None -> {
@@ -611,7 +623,7 @@ let filter_inbound_messages ?expected_recipient ~now policy state messages =
                          recipient_policy.recipient_max_bytes then
                (accepted, Inbound_oversize :: rejected)
              else
-               let sender_key = String.lowercase_ascii sender in
+               let sender_key = inbound_sender_key policy sender in
                let recipient_key = String.lowercase_ascii policy_recipient in
                let sender_events =
                  Hashtbl.find_opt state.sender_events sender_key
@@ -2499,15 +2511,23 @@ module Relay_client = struct
      selects the relay instead of a coincidentally named local registration.
      Sign with the original local alias: the opaque host is routing metadata,
      not a second signing identity. Never replace an existing qualified route. *)
-  let sender_reply_route ~host_id from_alias =
-    if String.contains from_alias '@' || not (C2c_name.is_opaque_host_id host_id)
-    then from_alias
+  let sender_reply_route ~host_id ~to_alias from_alias =
+    let same_relay =
+      match String.split_on_char '@' to_alias with
+      | [ _ ] -> true
+      | [ _; host ] -> C2c_name.is_opaque_host_id host
+      | _ -> false
+    in
+    (* A peer-relay destination gets its return relay appended by the
+       forwarder; keep the bare claim for that existing protocol. *)
+    if not same_relay || String.contains from_alias '@'
+       || not (C2c_name.is_opaque_host_id host_id) then from_alias
     else from_alias ^ "@" ^ host_id
 
   let send t ~from_alias ~to_alias ~content ?message_id () =
     let host_id = try Host_id.compute_host_hash () with _ -> "" in
     let base = [
-      ("from_alias", `String (sender_reply_route ~host_id from_alias));
+      ("from_alias", `String (sender_reply_route ~host_id ~to_alias from_alias));
       ("to_alias", `String to_alias);
       ("content", `String content);
     ] in

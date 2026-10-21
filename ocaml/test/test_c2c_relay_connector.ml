@@ -2660,13 +2660,28 @@ let test_hung_sync_still_errors_without_a_recorded_error () =
     (info.Relay_state.conn_health = Relay_state.Health_erroring)
 
 let test_sender_reply_route () =
-  let route = Conn.Relay_client.sender_reply_route in
+  let route = Conn.Relay_client.sender_reply_route ~to_alias:"target@abcdef012345" in
   Alcotest.(check string) "bare sender becomes remotely replyable"
     "t3-root@012345abcdef" (route ~host_id:"012345abcdef" "t3-root");
   Alcotest.(check string) "existing host is preserved"
     "peer@abcdef012345" (route ~host_id:"012345abcdef" "peer@abcdef012345");
   Alcotest.(check string) "invalid host cannot create a route"
-    "peer" (route ~host_id:"bad host" "peer")
+    "peer" (route ~host_id:"bad host" "peer");
+  Alcotest.(check string) "peer-relay route remains owned by the forwarder"
+    "peer" (Conn.Relay_client.sender_reply_route ~host_id:"012345abcdef" ~to_alias:"target@relay-b" "peer");
+  let deny : Conn.inbound_sender_policy =
+    { sender_action = Conn.Inbound_deny; sender_max_bytes = 100;
+      sender_rate = { rate_messages = 2; rate_window_s = 60. } }
+  in
+  let policy = { Conn.default_inbound_policy with sender_overrides = [ "peer", deny ] } in
+  Alcotest.(check bool) "bare deny survives source qualification" true
+    ((Conn.inbound_sender_policy policy "peer@012345abcdef").sender_action = Conn.Inbound_deny);
+  Alcotest.(check string) "legacy rate key survives qualification" "peer"
+    (Conn.inbound_sender_key policy "PEER@012345abcdef");
+  let allow = { deny with sender_action = Conn.Inbound_allow } in
+  let policy = { policy with sender_overrides = ("peer@012345abcdef", allow) :: policy.sender_overrides } in
+  Alcotest.(check bool) "host-specific policy wins" true
+    ((Conn.inbound_sender_policy policy "peer@012345abcdef").sender_action = Conn.Inbound_allow)
 
 let () =
   Random.self_init ();

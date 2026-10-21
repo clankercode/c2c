@@ -534,7 +534,7 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
               broker too; an operator flag cannot determine the message scope. *)
            List.iter (fun candidate -> ignore (Service.accept_inbox ~mode ~cross_repo:true ~owner ~state ~mapping:(Option.get candidate.Service.mapping) ())) applied.published;
            let thread_ids = List.map (fun candidate -> candidate.Service.thread.thread_id) applied.published in
-           let _recovery_result =
+           let recovery_result =
              run_lwt_exn (Recovery.sweep ~enabled:recovery ~client ~state ~environment_id:owner.environment_id
                         ~credential_generation:(T3.credential_generation_of client) ~thread_ids ~clock:now ())
            in
@@ -574,7 +574,10 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
                    Lwt_unix.sleep (min delay 60.) >>= fun () -> dispatch (count + 1)
            in
            (match run_lwt_exn (dispatch 0) with
-            | Ok () -> Ok (scan, applied)
+            | Ok () ->
+                if recovery_result.Recovery.errors <> [] then
+                  Error "model-availability checks failed; recovery is degraded"
+                else Ok (scan, applied)
             | Error reason -> Error reason)
 
 (* A private operational snapshot is separate from routing/dedupe state. It

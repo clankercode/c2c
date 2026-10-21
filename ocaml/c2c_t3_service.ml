@@ -449,7 +449,7 @@ let apply_plan ~owner ~state ~plan =
   let held = ref [] in
   let errors = ref [] in
   let record_write = function
-    | Ok () -> ()
+    | Ok _ -> ()
     | Error error -> errors := ("cannot persist lifecycle hold: " ^ error) :: !errors
   in
   (* A prior crash may have removed the durable route after the state write
