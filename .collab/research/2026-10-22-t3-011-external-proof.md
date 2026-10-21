@@ -25,3 +25,22 @@ T3 0.1.1 exits a desktop backend when its launcher dies. A fixture driver must
 remain alive for the whole proof; calling the fixture `start` CLI in a short
 lived parent and then starting a separate probe loses the backend. In-process
 fixture APIs keep the launcher alive without changing T3.
+
+## Native worker follow-up
+
+The strengthened native proof passed on both hosts using the `dcc7bc77` engine
+and final proof driver at `/tmp/c2c-p9-native-worker-r2`. It observed recovery
+without sending Continue from the driver, negative cases including Stop and
+snooze, idle start and active steering by provider nonce hashes, actual default
+sweep timestamps, broker/state alias reuse and delivery after restart, durable
+disable, permission holds, retirement preserving pending mail, and permission
+repair preserving credentials and state. Both roots were cleaned up successfully.
+Receipts are `native-service-proof.json` inside each private fixture root.
+
+Later review found a real spacing issue before awaited recovery preflight. The
+final engine refreshes the submission clock and persists a conservative send
+completion boundary. A controlled-clock regression models 1.2s preflight plus
+0.4s send and verifies a full second still remains afterward. Provider receipt
+timestamps remain independent delivery evidence; asynchronous startup means
+they cannot establish spacing at MCP admission. Final-source gates and installed
+build proofs remain required; the earlier worker proof is not an install receipt.
