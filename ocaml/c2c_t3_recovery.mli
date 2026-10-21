@@ -116,7 +116,11 @@ val sweep_with :
   thread_ids:string list ->
   clock:(unit -> float) ->
   unit -> sweep_result Lwt.t
-(** Testable operation seam used by the real client-backed sweep. *)
+(** Testable operation seam used by the real client-backed sweep. A complete
+    eligible read can re-arm or refresh an intent only if it provably has never
+    been submitted and its credential generation still matches. Obsolete unsent
+    runs receive a durable cancellation acknowledgment. Submitted uncertainty
+    remains held for reconciliation and continues to block another recovery. *)
 
 val sweep :
   ?enabled:bool ->

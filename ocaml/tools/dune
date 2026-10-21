@@ -42,3 +42,9 @@
  (name c2c_post_compact_hook_bin)
  (modules c2c_post_compact_hook_bin)
  (libraries c2c_mcp c2c_post_compact_hook_lib unix yojson))
+
+; Development-only external API fault injection, never installed.
+(executable
+ (name c2c_t3_fault_proof)
+ (modules c2c_t3_fault_proof)
+ (libraries c2c_mcp lwt.unix unix yojson))

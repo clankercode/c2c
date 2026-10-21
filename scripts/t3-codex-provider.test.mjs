@@ -91,6 +91,8 @@ async function fixture(t, { control = false, log = true, args = ['app-server'], 
     return message.result;
   }
   return { child, directory, logPath, controlPath, exited, inbox, waitFor, request, ok,
+    respond: (id, result, { omitVersion = false } = {}) => child.stdin.write(
+      `${JSON.stringify({ ...(omitVersion ? {} : { jsonrpc: '2.0' }), id, result })}\n`),
     notify: (method) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`),
     next: (method, predicate = () => true) => waitFor((message) => message.method === method && predicate(message.params)),
     control: (value) => fs.writeFileSync(controlPath, JSON.stringify(value), { mode: 0o600 }),
@@ -245,6 +247,32 @@ test('hold persists across steer and releases only through explicit scratch cont
   assert.equal((await peer.exited).code, 0);
 });
 
+test('approval is a real server request and only explicit decline releases its lifecycle', async (t) => {
+  const peer = await initialized(t, { control: true });
+  const threadId = await startThread(peer);
+  const active = await turn(peer, threadId, 'C2C_FIXTURE:approval');
+  const approval = await peer.next('item/commandExecution/requestApproval');
+  assert.equal(approval.params.threadId, threadId);
+  assert.equal(approval.params.turnId, active.id);
+  assert.equal(approval.params.command, 'c2c-fixture-noop');
+  assert.equal(typeof approval.id, 'string');
+  assert(Number.isFinite(approval.params.startedAtMs));
+  // Responses may only decline/cancel this inert request, never approve it.
+  peer.respond(approval.id, { decision: 'accept' });
+  assert.equal((await peer.ok('thread/read', { threadId })).thread.turns[0].status, 'inProgress');
+  assert(peer.journal().some((row) => row.method === 'fixture/approval-response-rejected'));
+  // Codex stdio peers may omit the optional jsonrpc field on responses.
+  peer.respond(approval.id, { decision: 'decline' }, { omitVersion: true });
+  await peer.next('item/agentMessage/delta', (params) => params.delta === 'C2C_FIXTURE_APPROVAL_DECLINED');
+  assert(peer.journal().some((row) => row.method === 'fixture/approval-response'
+    && row.threadId === threadId && row.decision === 'decline'));
+  peer.control({ action: 'fail', threadId });
+  assert.equal((await completed(peer, threadId, active.id)).status, 'failed');
+  const read = await peer.ok('thread/read', { threadId });
+  assert.equal(read.thread.turns.length, 1);
+  assert.equal(read.thread.turns[0].error.codexErrorInfo, 'flexUnavailable');
+});
+
 test('interrupt validates the exact active turn and terminalizes it once', async (t) => {
   const peer = await initialized(t);
   const threadId = await startThread(peer);
@@ -253,6 +281,21 @@ test('interrupt validates the exact active turn and terminalizes it once', async
   await peer.ok('turn/interrupt', { threadId, turnId: active.id });
   assert.equal((await completed(peer, threadId, active.id)).status, 'interrupted');
   assert.equal((await peer.request('turn/interrupt', { threadId, turnId: active.id })).error.code, -32602);
+});
+
+test('an explicit later hold turn stays active after an availability failure', async (t) => {
+  const peer = await initialized(t, { control: true });
+  const threadId = await startThread(peer);
+  const failed = await turn(peer, threadId, 'C2C_FIXTURE:availability');
+  assert.equal((await completed(peer, threadId, failed.id)).status, 'failed');
+  const active = await turn(peer, threadId, 'C2C_FIXTURE:hold');
+  await peer.next('item/agentMessage/delta', (params) => params.delta === 'C2C_FIXTURE_HOLDING');
+  const snapshot = await peer.ok('thread/read', { threadId });
+  assert.equal(snapshot.thread.turns.length, 2);
+  assert.equal(snapshot.thread.turns[1].id, active.id);
+  assert.equal(snapshot.thread.turns[1].status, 'inProgress');
+  peer.control({ action: 'complete', threadId });
+  assert.equal((await completed(peer, threadId, active.id)).status, 'completed');
 });
 
 for (const scenario of ['retry', 'update']) {

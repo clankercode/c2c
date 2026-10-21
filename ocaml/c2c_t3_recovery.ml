@@ -293,8 +293,7 @@ let decide ~environment_id ~credential_generation ~thread_id ~driver_kind
   | Some _ -> hold "thread provider is not Codex"
   | None -> hold "thread provider is unknown"
 
-let enqueue ~state ~environment_id ~credential_generation ~now candidate =
-  let payload =
+let intent_payload ~environment_id ~credential_generation ~now candidate =
     `Assoc
       [ ("version", `Int 1); ("kind", `String "recovery"); ("status", `String "pending");
         ("environment_id", `String environment_id); ("thread_id", `String candidate.thread_id);
@@ -305,7 +304,9 @@ let enqueue ~state ~environment_id ~credential_generation ~now candidate =
         ("formatted", `String "Continue"); ("mode", `String "queue");
         ("request_id", `String candidate.request_id); ("attempts", `Int 0);
         ("next_attempt_at", `Float now); ("credential_generation", `Int credential_generation) ]
-  in
+
+let enqueue ~state ~environment_id ~credential_generation ~now candidate =
+  let payload = intent_payload ~environment_id ~credential_generation ~now candidate in
   match State.journal_append state ~kind:State.Recovery ~key:candidate.key ~payload with
   | Error error -> Error error
   | Ok State.Duplicate -> Ok `Duplicate
@@ -320,6 +321,48 @@ let float_member key json =
   | _ -> None
 
 let recovery_thread entry = string_at [ "thread_id" ] entry.State.payload
+
+(* Only a proven never-submitted intent can be replaced. Missing or malformed
+   attempt metadata, an in-flight marker, or any submission timestamp is
+   uncertainty; these entries must remain available for operator reconciliation.
+   Fresh eligibility is required before calling this function. *)
+let reconcile_unsent ~state ~credential_generation ~candidate ~now =
+  List.fold_left
+    (fun result (entry : State.entry) ->
+      match result with
+      | Error _ -> result
+      | Ok () ->
+          if recovery_thread entry <> Some candidate.thread_id
+             || member "attempts" entry.payload <> Some (`Int 0)
+             || member "last_submission_at" entry.payload <> None
+             || member "uncertain" entry.payload = Some (`Bool true)
+             || string_at [ "status" ] entry.payload = Some "in_flight"
+          then Ok ()
+          else if entry.key <> candidate.key then
+            (match State.journal_ack_with_result state ~seq:entry.seq
+                     ~result:(`Assoc [ ("thread_id", `String candidate.thread_id);
+                       ("outcome", `String "cancelled_before_submission");
+                       ("reason", `String "superseded by a newer failed run") ]) with
+             | Ok _ -> Ok () | Error error -> Error error)
+          else if member "credential_generation" entry.payload <> Some (`Int credential_generation)
+          then Ok ()
+          else
+            (* A preflight/API hold may clear on the next complete sweep. The
+               same run may also gain updated failure evidence before any send.
+               Replacing this unsent payload cannot replay an accepted request;
+               submitted/acked run keys never reach this branch. *)
+            match candidate_of_entry entry with
+            | Error error -> Error error
+            | Ok previous ->
+                if candidate_equal previous candidate
+                   && string_at [ "status" ] entry.payload <> Some "held"
+                then Ok ()
+                else
+                  let payload = intent_payload ~environment_id:(State.environment_id state)
+                      ~credential_generation ~now candidate in
+                  (match State.journal_update state ~seq:entry.seq ~payload with
+                   | Ok _ -> Ok () | Error error -> Error error))
+    (Ok ()) (State.journal_pending ~kind:State.Recovery state)
 
 let hold_reason ~state ~thread_id ~candidate ~now =
   let different_pending =
@@ -450,7 +493,11 @@ let sweep_with ?(enabled = true) ~operations ~state ~environment_id ~credential_
                        | Held reason -> loop (checked + 1) enqueued duplicates ((thread_id, reason) :: held) errors rest
                        | Eligible candidate ->
                            let now = clock () in
-                           (match hold_reason ~state ~thread_id ~candidate ~now with
+                           (match reconcile_unsent ~state ~credential_generation ~candidate ~now with
+                            | Error error -> loop (checked + 1) enqueued duplicates held
+                                ((thread_id, error) :: errors) rest
+                            | Ok () ->
+                           match hold_reason ~state ~thread_id ~candidate ~now with
                             | Some reason -> loop (checked + 1) enqueued duplicates ((thread_id, reason) :: held) errors rest
                             | None ->
                                 (match enqueue ~state ~environment_id ~credential_generation

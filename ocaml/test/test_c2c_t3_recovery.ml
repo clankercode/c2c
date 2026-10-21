@@ -109,6 +109,9 @@ let test_holds () =
   hold "malformed error" (base_activity ~items:[ `Assoc [ ("itemType", `String "error"); ("runId", `String "run-1") ] ] ()) (queue ());
   hold "active" (base_activity ~active:(T.Known (Some "run-2")) ()) (queue ());
   hold "queued" (base_activity ()) (queue ~ids:[ "queued" ] ());
+  hold "approval" (base_activity ~pending:(T.Known 1) ()) (queue ());
+  hold "snoozed" (base_activity ~snoozed:(T.Known true) ()) (queue ());
+  hold "settled" (base_activity ~settled:(T.Known true) ()) (queue ());
   hold "incomplete queue" (base_activity ()) (queue ~complete:false ());
   hold "truncated activity" (base_activity ~complete:false ()) (queue ());
   hold "truncated runs" (base_activity ~runs_complete:false ()) (queue ());
@@ -159,6 +162,75 @@ let test_sweep_seam_and_disable () =
       Alcotest.(check (list string)) "sorted serialized reads"
         [ "queue:b"; "read:b"; "queue:a"; "read:a"; "capabilities" ] !calls;
       S.close state)
+
+let test_held_intent_reconciliation () =
+  let dir = Filename.temp_file "c2c-t3-reconcile" "" in
+  Sys.remove dir;
+  let rec cleanup path =
+    if (Unix.lstat path).Unix.st_kind = Unix.S_DIR then begin
+      Array.iter (fun name -> cleanup (Filename.concat path name)) (Sys.readdir path);
+      Unix.rmdir path
+    end else Unix.unlink path
+  in
+  Fun.protect ~finally:(fun () -> cleanup dir) (fun () ->
+    let reopen () = match S.open_state ~environment_id:"env" ~dir () with
+      | Ok s -> s | Error _ -> Alcotest.fail "state" in
+    let state = ref (reopen ()) in
+    Fun.protect ~finally:(fun () -> S.close !state) (fun () ->
+      let activity = ref (base_activity ()) in
+      let operations =
+        { R.capabilities = (fun () -> Lwt.return (Ok
+              { T.runtime_mode = T.Known "auto"; interaction_mode = T.Unknown;
+                providers = [ { T.provider_instance_id = T.Known "p1";
+                  driver_kind = T.Known "codex"; models = [ "gpt" ] } ] }));
+          read_activity = (fun _ -> Lwt.return (Ok !activity));
+          list_queue = (fun _ -> Lwt.return (Ok (queue ()))) } in
+      let sweep () = Lwt_main.run (R.sweep_with ~operations ~state:!state
+        ~environment_id:"env" ~credential_generation:4 ~thread_ids:[ "root" ]
+        ~clock:(fun () -> 100.) ()) in
+      ignore (sweep ());
+      let original = List.hd (S.journal_pending !state) in
+      let hold ?(attempts = 0) entry =
+        let fields = Yojson.Safe.Util.to_assoc entry.S.payload in
+        let changes = [ "status", `String "held"; "attempts", `Int attempts;
+                        "reason", `String "preflight read failed" ] in
+        let fields = changes @ List.filter (fun (k, _) -> not (List.mem_assoc k changes)) fields in
+        check (S.journal_update !state ~seq:entry.seq ~payload:(`Assoc fields) = Ok true)
+          "persist preflight hold" in
+      hold original;
+      S.close !state;
+      state := reopen ();
+      ignore (sweep ());
+      let rearmed = List.hd (S.journal_pending !state) in
+      Alcotest.(check string) "fresh same evidence rearms unsent intent" "pending"
+        Yojson.Safe.Util.(to_string (member "status" rearmed.payload));
+      Alcotest.(check string) "same run key" original.key rearmed.key;
+      Alcotest.(check string) "same request identity"
+        Yojson.Safe.Util.(to_string (member "request_id" original.payload))
+        Yojson.Safe.Util.(to_string (member "request_id" rearmed.payload));
+      activity := { !activity with T.items =
+        [ error_item ~run_id:"run-1" ~message:"The model is not available right now" () ] };
+      ignore (sweep ());
+      let refreshed = List.hd (S.journal_pending !state) in
+      Alcotest.(check int) "same run keeps intent slot" rearmed.seq refreshed.seq;
+      check (Yojson.Safe.Util.member "error_fingerprint" refreshed.payload <>
+             Yojson.Safe.Util.member "error_fingerprint" rearmed.payload)
+        "never submitted evidence refreshed";
+      hold rearmed;
+      activity := { !activity with T.items = [ error_item ~run_id:"run-2" ~item_id:"e2" () ];
+        recent_runs = [ { T.run_id = "run-2"; status = T.Known "failed"; run_raw = `Assoc [] } ] };
+      let second = sweep () in
+      Alcotest.(check int) "new failure not blocked by never submitted hold" 1 (List.length second.enqueued);
+      Alcotest.(check int) "one pending intent" 1 (List.length (S.journal_pending !state));
+      Alcotest.(check int) "obsolete intent audit retained" 1 (List.length (S.journal_acked !state));
+      let attempted = List.hd (S.journal_pending !state) in
+      hold ~attempts:1 attempted;
+      activity := { !activity with T.items = [ error_item ~run_id:"run-3" ~item_id:"e3" () ];
+        recent_runs = [ { T.run_id = "run-3"; status = T.Known "failed"; run_raw = `Assoc [] } ] };
+      let uncertain = sweep () in
+      Alcotest.(check int) "uncertain submission still blocks new recovery" 0 (List.length uncertain.enqueued);
+      Alcotest.(check string) "uncertain intent retained" attempted.key
+        (List.hd (S.journal_pending !state)).key))
 
 let test_final_preflight () =
   let candidate =
@@ -216,5 +288,6 @@ let () =
       ("policy", [ Alcotest.test_case "positive and durable dedupe" `Quick test_positive_and_dedupe;
                     Alcotest.test_case "holds" `Quick test_holds ]);
       ("cadence", [ Alcotest.test_case "initial, spacing and overlap" `Quick test_cadence ]);
-      ("sweep", [ Alcotest.test_case "seam and disable" `Quick test_sweep_seam_and_disable;
+      ("sweep", [ Alcotest.test_case "held intent reconciliation" `Quick test_held_intent_reconciliation;
+                   Alcotest.test_case "seam and disable" `Quick test_sweep_seam_and_disable;
                    Alcotest.test_case "final preflight" `Quick test_final_preflight ]) ]

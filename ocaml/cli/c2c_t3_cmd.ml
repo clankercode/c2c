@@ -47,6 +47,10 @@ let mode_of_string = function
   | "auto" -> Ok `Auto | "queue" -> Ok `Queue | "steer" -> Ok `Steer | "restart" -> Ok `Restart
   | value -> Error ("unknown delivery mode " ^ value ^ "; use auto, queue, steer, or restart")
 
+let mode_arg =
+  Cmdliner.Arg.enum [ ("auto", `Auto); ("queue", `Queue);
+                      ("steer", `Steer); ("restart", `Restart) ]
+
 (* See [send_cmd]: this is deliberately process-local rather than persisted.
    The T3 MCP client receives one request per invocation, while the durable
    service dispatcher owns replay identity for background deliveries. *)
@@ -116,6 +120,27 @@ let thread_mapping_json mapping =
        | None -> `Null
        | Some tombstone -> `Assoc [ ("at", `Float tombstone.tombstoned_at); ("reason", `String tombstone.reason) ]) ]
 
+let journal_payload_uncertain = function
+  | `Assoc payload ->
+      let submission_evidence =
+        (match List.assoc_opt "attempts" payload with Some (`Int n) -> n > 0 | _ -> false)
+        || List.mem_assoc "last_submission_at" payload
+      in
+      List.assoc_opt "uncertain" payload = Some (`Bool true)
+      || List.assoc_opt "status" payload = Some (`String "uncertain")
+      || List.assoc_opt "status" payload = Some (`String "in_flight")
+      || (List.assoc_opt "status" payload = Some (`String "held")
+          && submission_evidence)
+  | _ -> false
+
+let journal_payload_has_error = function
+  | `Assoc payload ->
+      List.assoc_opt "preflight_failed" payload = Some (`Bool true)
+      || (match List.assoc_opt "last_error" payload with
+       | Some (`String error) -> error <> ""
+       | _ -> false)
+  | _ -> false
+
 let state_snapshot () =
   let directory = state_dir () in
   let path = directory // "state.json" in
@@ -144,10 +169,16 @@ let state_snapshot () =
               List.filter_map (fun entry -> match entry with `Assoc values -> (match List.assoc_opt "at" values with Some (`Float at) -> Some at | Some (`Int at) -> Some (float_of_int at) | _ -> None) | _ -> None) journal
               |> List.sort Float.compare |> function [] -> None | value :: _ -> Some value
             in
-            let uncertain =
-              List.fold_left (fun count entry -> match entry with `Assoc values -> (match List.assoc_opt "payload" values with Some (`Assoc payload) when List.assoc_opt "status" payload = Some (`String "uncertain") -> count + 1 | _ -> count) | _ -> count) 0 journal
+            let count_payload predicate =
+              List.fold_left (fun count entry -> match entry with
+                | `Assoc values -> (match List.assoc_opt "payload" values with
+                    | Some payload when predicate payload -> count + 1
+                    | _ -> count)
+                | _ -> count) 0 journal
             in
-            `Assoc [ ("available", `Bool true); ("initialized", `Bool true); ("pending", `Int (length "journal")); ("mappings", `Int (length "mappings")); ("acked", `Int (length "acked")); ("uncertainEntries", `Int uncertain); ("queueAgeSeconds", match oldest_at with Some at -> `Float (max 0. (now () -. at)) | None -> `Null); ("scanAgeSeconds", `Null) ]
+            let uncertain = count_payload journal_payload_uncertain in
+            let retained_errors = count_payload journal_payload_has_error in
+            `Assoc [ ("available", `Bool true); ("initialized", `Bool true); ("pending", `Int (length "journal")); ("mappings", `Int (length "mappings")); ("acked", `Int (length "acked")); ("uncertainEntries", `Int uncertain); ("retainedErrorEntries", `Int retained_errors); ("healthy", `Bool (uncertain = 0 && retained_errors = 0)); ("queueAgeSeconds", match oldest_at with Some at -> `Float (max 0. (now () -. at)) | None -> `Null); ("scanAgeSeconds", `Null) ]
         | _ -> `Assoc [ ("available", `Bool false); ("reason", `String "state.json is not an object") ]
       with _ -> `Assoc [ ("available", `Bool false); ("reason", `String "state.json is malformed") ]
 
@@ -370,7 +401,8 @@ let send_cmd locator message mode json =
 let send_term =
   let locator = Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ALIAS" ~doc:"Local T3 alias or t3.<thread-id> locator.") in
   let message = Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"MESSAGE" ~doc:"Message text sent as an agent-originated T3 message.") in
-  let mode = Cmdliner.Arg.(value & opt string "auto" & info [ "mode" ] ~docv:"MODE" ~doc:"Delivery mode: auto, queue, steer, or restart.") in
+  let mode = Cmdliner.Arg.(value & opt mode_arg `Auto & info [ "mode" ] ~docv:"MODE" ~doc:"Delivery mode: auto, queue, steer, or restart.") in
+  let mode = Cmdliner.Term.(const string_of_mode $ mode) in
   as_command (const send_cmd $ locator $ message $ mode $ json_flag)
 
 let recovery_config_path () = config_dir () // "config.json"
@@ -528,7 +560,6 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
       in
       let plan = Service.plan_reconciliation ~scan ~mappings:(State.mappings state) ~point_reads () in
            let applied = Service.apply_plan ~owner ~state ~plan in
-           let mode = match mode_of_string mode with Ok value -> value | Error _ -> `Auto in
            (* All enrolled aliases live in the shared sessions broker, regardless
               of the provider worktree. Replies must explicitly select that
               broker too; an operator flag cannot determine the message scope. *)
@@ -562,6 +593,7 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
            in
            let dispatcher =
              Service.create_dispatcher ~state
+               ~credential_identity:(fun () -> T3.credential_identity_of client)
                ~credential_generation:(fun () -> T3.credential_generation_of client)
                ~can_send:(Recovery.can_dispatch ~enabled:recovery)
                ~preflight
@@ -569,12 +601,18 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
                  T3.send_message client ~thread_id ~message ~mode ~client_request_id)
                ~clock:now ()
            in
+           let dispatch_failed = ref false in
            let rec dispatch count =
              if count >= 16 then Lwt.return (Ok ())
              else Service.dispatch_once dispatcher >>= function
                | Service.Rebind_required reason -> Lwt.return (Error reason)
                | Service.Idle -> Lwt.return (Ok ())
-               | Service.Submitted _ | Service.Retained _ | Service.Held _ ->
+               | Service.Submitted _ ->
+                   dispatch (count + 1)
+               | Service.Retained _ | Service.Held _ ->
+                   (* Reasons may contain remote error details. Persist only
+                      aggregate health here; journal diagnostics stay private. *)
+                   dispatch_failed := true;
                    dispatch (count + 1)
                | Service.Waiting delay ->
                    Lwt_unix.sleep (min delay 60.) >>= fun () -> dispatch (count + 1)
@@ -585,6 +623,13 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
                   Error "inbound mailbox acceptance failed; delivery is degraded"
                 else if recovery_result.Recovery.errors <> [] then
                   Error "model-availability checks failed; recovery is degraded"
+                else if !dispatch_failed then
+                  Error "delivery dispatch held or retained work; delivery is degraded"
+                else if List.exists
+                    (fun (entry : State.entry) -> journal_payload_uncertain entry.payload
+                                                 || journal_payload_has_error entry.payload)
+                    (State.journal_pending state) then
+                  Error "unresolved delivery journal failures; delivery is degraded"
                 else Ok (scan, applied)
             | Error reason -> Error reason)
 
@@ -667,7 +712,7 @@ let foreground_term =
   let foreground = Cmdliner.Arg.(value & flag & info [ "foreground" ] ~doc:"Run in the foreground (the default for this command).") in
   let once = Cmdliner.Arg.(value & flag & info [ "once" ] ~doc:"Run one discovery/delivery/recovery sweep and exit (fixture/operator use).") in
   let interval = Cmdliner.Arg.(value & opt float 60. & info [ "interval" ] ~docv:"SECONDS" ~doc:"Seconds between serialized service sweeps (default 60).") in
-  let mode = Cmdliner.Arg.(value & opt string "auto" & info [ "mode" ] ~docv:"MODE" ~doc:"Inbound delivery mode: auto, queue, steer, or restart.") in
+  let mode = Cmdliner.Arg.(value & opt mode_arg `Auto & info [ "mode" ] ~docv:"MODE" ~doc:"Inbound delivery mode: auto, queue, steer, or restart.") in
   let cross_repo = cross_repo_flag in
   let recovery = Cmdliner.Arg.(value & opt (some bool) None & info [ "recovery" ] ~docv:"BOOL" ~doc:"Override durable model-availability Continue recovery for this process.") in
   as_command (const foreground_cmd $ foreground $ once $ interval $ mode $ cross_repo $ recovery)
@@ -710,6 +755,17 @@ let doctor_cmd json =
     | Error error -> (`Assoc [ ("ready", `Bool false); ("error", `String error) ], `Null, false)
   in
   let state = state_snapshot () in
+  let state_healthy = match state with
+    | `Assoc fields -> List.assoc_opt "available" fields = Some (`Bool true)
+                       && List.assoc_opt "healthy" fields <> Some (`Bool false)
+    | _ -> false
+  in
+  let monitor = read_service_status () in
+  let monitor_healthy = match monitor with
+    | `Assoc fields when List.assoc_opt "running" fields = Some (`Bool true) ->
+        List.assoc_opt "healthy" fields = Some (`Bool true)
+    | _ -> true
+  in
   let runtime_ready = match runtime with `Assoc fields -> List.assoc_opt "ready" fields = Some (`Bool true) | _ -> false in
   let credential_present = match credential with `Assoc fields -> List.assoc_opt "present" fields = Some (`Bool true) | _ -> false in
   let recovery_reason =
@@ -721,13 +777,14 @@ let doctor_cmd json =
   let unit_active = C2c_t3_systemd.unit_is_active () in
   let unit_enabled = C2c_t3_systemd.unit_is_enabled () in
   let result =
-    `Assoc [ ("healthy", `Bool (runtime_ready && credential_present && api_ready));
+    `Assoc [ ("healthy", `Bool (runtime_ready && credential_present && api_ready
+                               && state_healthy && monitor_healthy));
              ("runtime", runtime); ("credential", credential); ("api", api);
              ("permissionCeiling", permission_ceiling); ("state", state);
              ("recoveryEnabled", `Bool recovery_enabled_value);
              ("recoveryHold", match recovery_reason with Some reason -> `String reason | None -> `Null);
              ("recoveryCadenceSeconds", `Int 60);
-             ("monitor", read_service_status ());
+             ("monitor", monitor);
              ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool unit_active);
                                ("enabled", `Bool unit_enabled);
                                ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ]) ]

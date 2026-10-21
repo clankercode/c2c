@@ -840,6 +840,7 @@ type dispatcher = {
   spacing : float;
   can_send : State.entry -> bool;
   credential_generation : unit -> int;
+  credential_identity : unit -> string;
   mutable last_thread : string option;
   mutable flush_deferrable : bool;
   mutable rebind_required : string option;
@@ -847,9 +848,10 @@ type dispatcher = {
 
 let create_dispatcher ?(spacing = 1.) ?(can_send = fun _ -> true)
     ?(preflight = fun _ -> Lwt.return (Ok ()))
-    ?(credential_generation = fun () -> 0) ?(flush_deferrable = false) ~state ~send ~clock () =
+    ?(credential_generation = fun () -> 0) ?(flush_deferrable = false)
+    ~credential_identity ~state ~send ~clock () =
   if spacing < 0. then invalid_arg "T3 dispatcher spacing must be non-negative";
-  { state; send; preflight; clock; spacing; can_send; credential_generation; last_thread = None;
+  { state; send; preflight; clock; spacing; can_send; credential_generation; credential_identity; last_thread = None;
     flush_deferrable; rebind_required = None }
 
 let release_deferrable dispatcher = dispatcher.flush_deferrable <- true
@@ -937,6 +939,27 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                (pending_dispatch_entries dispatcher ~flush_deferrable now) with
        | None -> Lwt.return Idle
        | Some entry ->
+           let previously_submitted =
+             int_member "attempts" entry.payload <> Some 0
+             || json_member "last_submission_at" entry.payload <> None
+             || string_member "status" entry.payload = Some "in_flight"
+           in
+           (* T3 namespaces command receipts by the OAuth client. A re-pair
+              must never turn a lost response into a new accepted command.
+              Preserve the original generation and payload for reconciliation. *)
+           if previously_submitted
+              && (int_member "credential_generation" entry.payload
+                  <> Some (dispatcher.credential_generation ())
+                  || string_member "credential_identity" entry.payload
+                     <> Some (dispatcher.credential_identity ())) then
+             let reason = "uncertain submission: credential identity changed or missing; operator reconciliation required" in
+             (match State.journal_update dispatcher.state ~seq:entry.seq
+                      ~payload:(with_fields entry.payload
+                        [ ("status", `String "held"); ("reason", `String reason);
+                          ("uncertain", `Bool true) ]) with
+              | Ok _ -> Lwt.return (Held reason)
+              | Error error -> Lwt.return (Held error))
+           else
            let required key =
              match string_member key entry.payload with
              | Some value -> Ok value
@@ -966,16 +989,19 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                    sweep ago, but a user turn, Stop marker, queue item or
                    provider change can make that evidence stale before the
                    one-second submission boundary.  A failed preflight is a
-                   terminal hold for this immutable intent; the next sweep
-                   can create a fresh intent only if the same run is still
-                   eligible. *)
+                   durable hold. A complete fresh sweep may re-arm a proven
+                   never-submitted intent, or cancel it if a newer run failed.
+                   Submitted uncertainty requires reconciliation. *)
                 dispatcher.preflight entry >>= function
                 | Error reason ->
-                    ignore (State.journal_update dispatcher.state ~seq:entry.seq
+                    (match State.journal_update dispatcher.state ~seq:entry.seq
                               ~payload:(with_fields entry.payload
                                 [ ("status", `String "held");
-                                  ("reason", `String reason) ]));
-                    Lwt.return (Held reason)
+                                  ("preflight_failed", `Bool true);
+                                  ("uncertain", `Bool previously_submitted);
+                                  ("reason", `String reason) ]) with
+                     | Ok _ -> Lwt.return (Held reason)
+                     | Error error -> Lwt.return (Held error))
                 | Ok () ->
                 (* Preflight performs awaited MCP reads. Its duration cannot
                    consume the interval reserved for the next submission. *)
@@ -986,6 +1012,7 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                     [ ("status", `String "in_flight");
                       ("attempts", `Int (attempts + 1));
                       ("credential_generation", `Int (dispatcher.credential_generation ()));
+                      ("credential_identity", `String (dispatcher.credential_identity ()));
                       ("last_submission_at", `Float now);
                       ("next_attempt_at", `Float (now +. dispatcher.spacing)) ]
                 in

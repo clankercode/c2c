@@ -762,6 +762,7 @@ type client = {
   origin : string;
   token : string;
   generation : int;
+  credential_identity : string;
   limits : limits;
   validate : unit -> (unit, error) result;
   lock : Lwt_mutex.t;
@@ -773,11 +774,17 @@ type client = {
 }
 
 let create ?(limits = default_limits) ~origin ~credential ~validate () =
+  let frame value = string_of_int (String.length value) ^ ":" ^ value in
+  let credential_identity = Digestif.SHA256.(to_hex (digest_string
+    (frame credential.c_origin ^ frame credential.c_home
+     ^ frame credential.c_client_id ^ frame credential.c_token))) in
   { origin; token = credential.c_token; generation = credential.c_generation;
+    credential_identity;
     limits; validate; lock = Lwt_mutex.create (); session = None; seq = 0;
     epoch = 0; auth_failed = false; tools = [] }
 
 let credential_generation_of c = c.generation
+let credential_identity_of c = c.credential_identity
 let transport_epoch c = c.epoch
 
 let mcp_request c ~during ~notification ~meth ~params =

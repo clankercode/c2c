@@ -188,6 +188,10 @@ val authorize :
     and persists the new proof under the same credential generation. *)
 
 val credential_generation_of : client -> int
+val credential_identity_of : client -> string
+(** Opaque private fingerprint of the paired OAuth identity. Unlike the display
+    generation, this changes after credential loss followed by a new pairing.
+    Use it to fence uncertain journal submissions; never log credentials. *)
 val transport_epoch : client -> int
 (** Incremented on every (re)initialization; the credential is retained. *)
 

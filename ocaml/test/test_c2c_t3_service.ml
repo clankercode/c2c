@@ -367,7 +367,7 @@ let test_accept_ack_and_distinct_identical_messages () =
         Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
                          message_id = "m"; run_id = "r" })
       in
-      let dispatcher = S.create_dispatcher ~state ~send ~clock:(fun () -> !now) () in
+      let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once dispatcher) with
        | S.Submitted _ -> () | _ -> Alcotest.fail "first dispatch did not submit");
       (match Lwt_main.run (S.dispatch_once dispatcher) with
@@ -402,7 +402,7 @@ let test_timeout_retries_same_request_after_reopen () =
         else Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
                               message_id = "m"; run_id = "r" })
       in
-      let first = S.create_dispatcher ~state ~send ~clock:(fun () -> !now) () in
+      let first = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once first) with
        | S.Retained _ -> () | _ -> Alcotest.fail "timeout was not retained");
       let first_request = List.hd !calls in
@@ -413,12 +413,12 @@ let test_timeout_retries_same_request_after_reopen () =
         | Error _ -> Alcotest.fail "reopen delivery state"
       in
       now := 0.5;
-      let boundary_check = S.create_dispatcher ~state ~send ~clock:(fun () -> !now) () in
+      let boundary_check = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once boundary_check) with
        | S.Waiting delay -> Alcotest.(check bool) "rate boundary survives restart" true (delay >= 0.49)
        | _ -> Alcotest.fail "restart lost the persisted rate boundary");
       now := 2.;
-      let second = S.create_dispatcher ~state ~send ~clock:(fun () -> !now) () in
+      let second = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once second) with
        | S.Submitted request -> Alcotest.(check string) "same request id replayed" first_request request
        | _ -> Alcotest.fail "replayed timeout did not submit");
@@ -443,7 +443,7 @@ let test_explicit_mode_is_preserved () =
         Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
                          message_id = "m"; run_id = "r" })
       in
-      let dispatcher = S.create_dispatcher ~state ~send ~clock:(fun () -> 0.) () in
+      let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~send ~clock:(fun () -> 0.) () in
       ignore (Lwt_main.run (S.dispatch_once dispatcher)))
 
 let test_deferrable_waits_for_explicit_flush () =
@@ -461,7 +461,7 @@ let test_deferrable_waits_for_explicit_flush () =
         Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
                          message_id = "m"; run_id = "r" })
       in
-      let dispatcher = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
+      let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
       (match Lwt_main.run (S.dispatch_once dispatcher) with
        | S.Idle -> ()
        | _ -> Alcotest.fail "deferrable entry dispatched without a flush");
@@ -488,7 +488,7 @@ let test_slow_preflight_and_send_preserve_spacing () =
         Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
           message_id = "m"; run_id = "r" })
       in
-      let dispatcher = S.create_dispatcher ~state ~preflight ~send ~clock:(fun () -> !now) () in
+      let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~preflight ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once dispatcher) with
        | S.Submitted _ -> () | _ -> Alcotest.fail "first submission failed");
       Alcotest.(check (float 0.0001)) "send timestamp follows slow preflight" 1.2 (List.hd !submissions);
@@ -513,7 +513,7 @@ let test_preflight_holds_stale_intent_before_send () =
                          message_id = "m"; run_id = "r" })
       in
       let dispatcher =
-        S.create_dispatcher ~spacing:0.
+        S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~spacing:0.
           ~preflight:(fun _ -> Lwt.return (Error "evidence changed"))
           ~send ~clock:(fun () -> 0.) ~state ()
       in
@@ -546,7 +546,7 @@ let test_rebind_errors_requeue_exact_request () =
           Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
                            message_id = "m"; run_id = "r" })
       in
-      let first = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> !now) () in
+      let first = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~spacing:0. ~state ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once first) with
        | S.Rebind_required _ -> ()
        | _ -> Alcotest.fail "runtime change did not request rebind");
@@ -563,13 +563,55 @@ let test_rebind_errors_requeue_exact_request () =
        | S.Rebind_required _ -> ()
        | _ -> Alcotest.fail "stale dispatcher retried after runtime change");
       now := 1.;
-      let second = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> !now) () in
+      let second = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~spacing:0. ~state ~send ~clock:(fun () -> !now) () in
       (match Lwt_main.run (S.dispatch_once second) with
        | S.Submitted request ->
            Alcotest.(check string) "request identity preserved" (List.hd !requests) request
        | _ -> Alcotest.fail "rebound client did not retry request");
       Alcotest.(check int) "one request after rebind" 2 (List.length !requests);
       Alcotest.(check int) "pending cleared" 0 (List.length (State.journal_pending state)))
+
+let test_uncertain_send_is_fenced_after_repair () =
+  let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
+  Fun.protect
+    ~finally:(fun () -> State.close state; cleanup_dir broker_root; cleanup_dir state_dir)
+    (fun () ->
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer" ~to_alias:mapping.alias
+        ~content:"response lost before re-pair" ();
+      ignore (S.accept_inbox ~owner ~state ~mapping ());
+      let calls = ref 0 in
+      let send ~thread_id:_ ~message:_ ~mode:_ ~client_request_id:_ =
+        incr calls; Lwt.return (Error (C2c_t3_client.Timeout "response lost")) in
+      let first = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~credential_generation:(fun () -> 4)
+        ~send ~clock:(fun () -> 0.) () in
+      ignore (Lwt_main.run (S.dispatch_once first));
+      let repaired = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~credential_generation:(fun () -> 5)
+        ~send ~clock:(fun () -> 100.) () in
+      (match Lwt_main.run (S.dispatch_once repaired) with
+       | S.Held _ -> () | _ -> Alcotest.fail "uncertain request replayed under new credential");
+      Alcotest.(check int) "only original namespace submitted" 1 !calls;
+      let pending = List.hd (State.journal_pending state) in
+      Alcotest.(check int) "original generation preserved" 4
+        Yojson.Safe.Util.(to_int (member "credential_generation" pending.payload));
+      Alcotest.(check string) "uncertainty is visible" "held"
+        Yojson.Safe.Util.(to_string (member "status" pending.payload));
+      List.iter
+        (fun (label, changes, remove) ->
+          let fields = Yojson.Safe.Util.to_assoc pending.payload in
+          let payload = `Assoc (changes @ List.filter
+            (fun (key, _) -> not (List.mem_assoc key changes || List.mem key remove)) fields) in
+          ignore (State.journal_update state ~seq:pending.seq ~payload);
+          let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~credential_generation:(fun () -> 4)
+            ~send ~clock:(fun () -> 200.) () in
+          (match Lwt_main.run (S.dispatch_once dispatcher) with
+           | S.Held _ -> () | _ -> Alcotest.fail (label ^ " was replayed"));
+          Alcotest.(check int) (label ^ " sent nothing") 1 !calls)
+        [ ("missing generation", [ "status", `String "pending" ], [ "credential_generation" ]);
+          ("missing identity", [ "status", `String "pending" ], [ "credential_identity" ]);
+          ("same generation different identity", [ "status", `String "pending";
+             "credential_identity", `String "other-client" ], []);
+          ("in-flight crash", [ "status", `String "in_flight"; "attempts", `Int 0;
+                                "credential_generation", `Int 5 ], [ "last_submission_at" ]) ])
 
 let test_auth_denied_is_held_until_repair () =
   let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
@@ -584,7 +626,7 @@ let test_auth_denied_is_held_until_repair () =
         incr calls;
         Lwt.return (Error (C2c_t3_client.Auth_denied { status = 401 }))
       in
-      let dispatcher = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
+      let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
       (match Lwt_main.run (S.dispatch_once dispatcher) with
        | S.Held reason ->
            Alcotest.(check bool) "reason identifies auth denial"
@@ -625,7 +667,7 @@ let test_dispatch_batch_has_maintenance_budget () =
       Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
                        message_id = "m"; run_id = "r" })
     in
-    let dispatcher = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
+    let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
     let first = Lwt_main.run (S.dispatch_batch ~max_steps:2 dispatcher) in
     Alcotest.(check bool) "first batch yields" true first.budget_exhausted;
     Alcotest.(check int) "first batch bounded" 2 !sends;
@@ -659,7 +701,7 @@ let test_dispatch_fairness_across_threads () =
       order := thread_id :: !order;
       Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id; message_id = "m"; run_id = "r" })
     in
-    let dispatcher = S.create_dispatcher ~state ~send ~clock:(fun () -> !now) () in
+    let dispatcher = S.create_dispatcher ~credential_identity:(fun () -> "test-client") ~state ~send ~clock:(fun () -> !now) () in
     ignore (Lwt_main.run (S.dispatch_once dispatcher));
     now := 1.;
     ignore (Lwt_main.run (S.dispatch_once dispatcher));
@@ -936,6 +978,7 @@ let () =
                       Alcotest.test_case "preflight holds stale" `Quick test_preflight_holds_stale_intent_before_send;
                       Alcotest.test_case "slow preflight spacing" `Quick test_slow_preflight_and_send_preserve_spacing;
                       Alcotest.test_case "rebind retries" `Quick test_rebind_errors_requeue_exact_request;
+                      Alcotest.test_case "re-pair uncertainty fence" `Quick test_uncertain_send_is_fenced_after_repair;
                       Alcotest.test_case "auth denial held" `Quick test_auth_denied_is_held_until_repair;
                       Alcotest.test_case "batch budget" `Quick test_dispatch_batch_has_maintenance_budget;
                       Alcotest.test_case "fairness" `Quick test_dispatch_fairness_across_threads ]) ]

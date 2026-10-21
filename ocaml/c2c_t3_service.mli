@@ -206,12 +206,15 @@ val create_dispatcher :
   ?preflight:(C2c_t3_state.entry -> (unit, string) result Lwt.t) ->
   ?credential_generation:(unit -> int) ->
   ?flush_deferrable:bool ->
+  credential_identity:(unit -> string) ->
   state:C2c_t3_state.t -> send:send -> clock:(unit -> float) -> unit -> dispatcher
 (** Create the single serial dispatcher shared by normal delivery and later
     recovery intents. The submission boundary is persisted before each MCP
     call, so restart cannot burst past [spacing]. Deferrable entries remain
     pending until [flush_deferrable] is true or {!release_deferrable} is
-    called. *)
+    called. [credential_identity] must return the actual paired client's opaque
+    identity. Attempted entries with a missing or different identity/generation
+    are held as uncertain, including legacy entries without an identity. *)
 
 val release_deferrable : dispatcher -> unit
 (** Release deferrable entries for the next dispatches. This is an explicit

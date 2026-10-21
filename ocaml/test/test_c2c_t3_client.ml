@@ -199,8 +199,23 @@ let test_discovery_ambiguous () =
 let proof = { T.pid; start_ticks = 100; boot_id = "boot-1"; listeners = [ "555" ]; exe_dev = 1; exe_ino = 2 }
 let token = "tok-SECRET-123"
 
-let cred ?(scopes = T.required_scopes) ?(generation = 1) origin =
-  T.make_credential ~origin ~t3_home:"/h" ~token ~client_id:"cid" ~scopes ~generation ~issued_at:"2026-01-01T00:00:00Z" ~expires_in:(Some 60) ~proof
+let cred ?(scopes = T.required_scopes) ?(generation = 1) ?(token = token) ?(client_id = "cid") origin =
+  T.make_credential ~origin ~t3_home:"/h" ~token ~client_id ~scopes ~generation ~issued_at:"2026-01-01T00:00:00Z" ~expires_in:(Some 60) ~proof
+
+let test_credential_identity () =
+  let identity credential =
+    T.credential_identity_of (T.create ~origin:"http://127.0.0.1:3773"
+      ~credential ~validate:(fun () -> Ok ()) ()) in
+  let original = cred "http://127.0.0.1:3773" in
+  let same = cred "http://127.0.0.1:3773" in
+  let repaired = cred ~client_id:"other-client" ~token:"new-token" "http://127.0.0.1:3773" in
+  Alcotest.(check int) "display generation can repeat" (T.credential_generation original)
+    (T.credential_generation repaired);
+  Alcotest.(check string) "same credential stable identity" (identity original) (identity same);
+  Alcotest.(check bool) "new pairing changes identity despite same generation" true
+    (identity original <> identity repaired);
+  Alcotest.(check int) "opaque fingerprint length" 64 (String.length (identity original));
+  Alcotest.(check bool) "token not exposed" false (contains ~sub:token (identity original))
 
 let test_credential_files () =
   let dir = Filename.concat (tmpdir ()) "cfg" in
@@ -403,7 +418,8 @@ let () =
                        Alcotest.test_case "proc-like stream" `Quick test_discovery_procfs_stream;
                        Alcotest.test_case "refusals" `Quick test_discovery_refusals;
                        Alcotest.test_case "ambiguous" `Quick test_discovery_ambiguous ] );
-      ( "credential", [ Alcotest.test_case "private files" `Quick test_credential_files ] );
+      ( "credential", [ Alcotest.test_case "private files" `Quick test_credential_files;
+                         Alcotest.test_case "non-reusable identity" `Quick test_credential_identity ] );
       ( "transport", [ Alcotest.test_case "happy path + reconnect" `Quick test_happy_path;
                        Alcotest.test_case "paging bound" `Quick test_paging_bound;
                        Alcotest.test_case "redirect" `Quick test_redirect;

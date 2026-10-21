@@ -400,6 +400,18 @@ rules. Reconcile by exact message identity, never by searching for the text
 that failed run even after restart. Explicit recovery-disable config stops
 new submissions and holds unsent recovery intents without discarding them.
 
+A preflight failure retains an unsent intent. A later complete eligible scan
+may re-arm it or refresh its evidence before the first submission, within the
+same credential generation. If a newer failed run supersedes an intent that
+provably never submitted, retain a cancellation acknowledgment and consider the
+new run. Any submission evidence or explicit uncertainty prevents this refresh
+or cancellation. Ambiguous entries from an older or missing credential
+generation remain held for operator reconciliation; retries never replace their
+original generation.
+Fence attempted entries with a private fingerprint of the paired OAuth identity
+in addition to the display generation, which can repeat after credential loss.
+Missing fingerprints on legacy attempted entries hold rather than replay.
+
 Service startup enables the monitor by default on verified compatible versions;
 no second command or process is necessary. `service doctor` reports enabled
 state, API capability, per-thread last check/next due, evidence/hold reason,

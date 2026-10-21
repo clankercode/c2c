@@ -39,7 +39,7 @@ const MAX_LOG = 1024 * 1024;
 const MAX_CONTROL = 4096;
 const MODEL = 'c2c-fixture';
 const scenarios = new Set(['availability', 'text-only', 'code-only', 'auth', 'usage',
-  'child-failure', 'mixed', 'mixed-root', 'hold', 'retry', 'update', 'success']);
+  'child-failure', 'mixed', 'mixed-root', 'hold', 'queued-work', 'approval', 'retry', 'update', 'success']);
 const codes = new Set(['contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded',
   'rateLimitExceeded', 'flexUnavailable', 'serverOverloaded', 'cyberPolicy',
   'misalignmentPolicyViolation', 'tooManyDenials', 'internalServerError', 'unauthorized',
@@ -47,6 +47,7 @@ const codes = new Set(['contextWindowExceeded', 'sessionBudgetExceeded', 'usageL
 const now = () => Math.floor(Date.now() / 1000);
 const hash = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const threads = new Map();
+const approvals = new Map();
 let outputBytes = 0;
 let requestCount = 0;
 let initialized = false;
@@ -126,7 +127,7 @@ function newThread({ id = crypto.randomUUID(), cwd = process.cwd(), parent = nul
     agentNickname: parent === null ? null : 'fixture-child',
     agentRole: null, gitInfo: null, name: null, turns: [],
   };
-  const state = { thread, scenario: null, active: null, held: false };
+  const state = { thread, scenario: null, active: null, held: false, approval: null };
   threads.set(id, state);
   return state;
 }
@@ -185,6 +186,10 @@ function failure(state, error, willRetry = false) {
 function finish(state, status = 'completed', error = null) {
   const turn = state.active;
   if (turn === null) return;
+  if (state.approval !== null) {
+    approvals.delete(state.approval);
+    state.approval = null;
+  }
   turn.status = status;
   turn.error = error;
   turn.completedAt = now();
@@ -213,7 +218,14 @@ function childFailure(root, mixed) {
   else { agentMessage(root, 'C2C_FIXTURE_HEALTHY_ROOT'); finish(root); }
 }
 
-function executeTurn(state, continuation) {
+function executeTurn(state, continuation, explicitHold = false) {
+  // The concurrent-start proof creates an ordinary held user turn after a
+  // prior failure. Literal Continue still follows its own completion path.
+  if (explicitHold) {
+    state.held = true;
+    agentMessage(state, 'C2C_FIXTURE_HOLDING', 'commentary');
+    return;
+  }
   if (continuation || state.thread.turns.length > 1) {
     agentMessage(state, continuation ? 'C2C_FIXTURE_RECOVERED' : 'C2C_FIXTURE_SUCCESS');
     finish(state);
@@ -235,9 +247,26 @@ function executeTurn(state, continuation) {
       failure(state, authenticationError());
       break;
     case 'hold':
+    case 'queued-work':
       state.held = true;
       agentMessage(state, 'C2C_FIXTURE_HOLDING', 'commentary');
       break;
+    case 'approval': {
+      state.held = true;
+      const id = `fixture-approval-${crypto.randomUUID()}`;
+      const itemId = crypto.randomUUID();
+      state.approval = id;
+      approvals.set(id, state);
+      journal({ method: 'fixture/approval-request', threadId: state.thread.id, turnId: state.active.id, itemId });
+      // A real Codex server request; there is deliberately no execution engine.
+      // Only decline/cancel responses are accepted by this offline fixture.
+      write({ id, method: 'item/commandExecution/requestApproval', params: {
+        threadId: state.thread.id, turnId: state.active.id, itemId,
+        startedAtMs: Date.now(), command: 'c2c-fixture-noop', cwd: state.thread.cwd,
+        reason: 'Offline c2c fixture approval; decline this inert request.',
+      } });
+      break;
+    }
     case 'retry':
     case 'update':
       state.held = true;
@@ -255,6 +284,21 @@ function inputText(params) {
 }
 
 function handle(message) {
+  if (message !== null && typeof message === 'object' && !Array.isArray(message)
+      && message.method === undefined && approvals.has(message.id)) {
+    if (![undefined, '2.0'].includes(message.jsonrpc) || message.error !== undefined
+        || !['decline', 'cancel'].includes(message.result?.decision)) {
+      journal({ method: 'fixture/approval-response-rejected' });
+      return;
+    }
+    const state = approvals.get(message.id);
+    approvals.delete(message.id);
+    state.approval = null;
+    journal({ method: 'fixture/approval-response', threadId: state.thread.id,
+      turnId: state.active.id, decision: message.result.decision });
+    agentMessage(state, 'C2C_FIXTURE_APPROVAL_DECLINED', 'commentary');
+    return;
+  }
   if (message === null || typeof message !== 'object' || Array.isArray(message) ||
       ![undefined, '2.0'].includes(message.jsonrpc) || typeof message.method !== 'string' ||
       !['undefined', 'string', 'number'].includes(typeof message.id) ||
@@ -333,7 +377,7 @@ function handle(message) {
       turnId: turn.id, scenario: state.scenario });
     reply(id, { turn });
     announceStart(state);
-    executeTurn(state, text.trim() === 'Continue');
+    executeTurn(state, text.trim() === 'Continue', marker?.[1] === 'hold');
     return;
   }
   if (method === 'turn/steer') {
@@ -383,6 +427,7 @@ function applyControl(filename) {
       (control.threadId === undefined || control.threadId === state.thread.id));
     if (candidates.length !== 1) throw new Error('ambiguous control target');
     const state = candidates[0];
+    if (state.approval !== null) throw new Error('approval must be declined before explicit completion');
     journal({ method: 'fixture/control', action: control.action, threadId: state.thread.id });
     if (control.action === 'fail') failure(state, { message: control.message ?? availabilityError().message,
       codexErrorInfo: control.code === undefined ? 'flexUnavailable' : control.code, additionalDetails: null });

@@ -17,6 +17,47 @@ import { MatrixRunner } from './t3-connector-matrix.mjs';
 const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const continuations = (snapshot) => snapshot.items.filter((item) => item.type === 'user_message' && item.text === 'Continue');
 
+// Synthetic operator use only: the production connector never has this setup
+// credential. Serialize on its owned socket and permit only these two methods.
+async function approvalFixtureRpc(rpc, tag, payload) {
+  assert(['orchestration.getThreadProjection', 'orchestration.dispatchCommand'].includes(tag));
+  if (tag === 'orchestration.dispatchCommand') {
+    assert.equal(payload.type, 'runtime-request.respond');
+    assert.equal(payload.decision, 'decline', 'fixture only declines; it never approves execution');
+  }
+  rpc.validate();
+  const id = `fixture-approval-proof-${crypto.randomUUID()}`;
+  return new Promise((resolve, reject) => {
+    const finish = (error, value) => {
+      clearTimeout(timeout);
+      rpc.socket.removeEventListener('message', listener);
+      rpc.socket.removeEventListener('close', closed);
+      rpc.socket.removeEventListener('error', closed);
+      error ? reject(error) : resolve(value);
+    };
+    const closed = () => finish(new Error('Approval fixture operator disconnected'));
+    const listener = (event) => {
+      try {
+        const text = typeof event.data === 'string' ? event.data : Buffer.from(event.data).toString('utf8');
+        assert(Buffer.byteLength(text) <= 8 * 1024 * 1024, 'bounded fixture RPC frame');
+        const parsed = JSON.parse(text);
+        for (const response of Array.isArray(parsed) ? parsed : [parsed]) {
+          if (response.requestId !== id) continue;
+          assert.equal(response._tag, 'Exit');
+          assert.equal(response.exit?._tag, 'Success', 'fixture approval operation succeeds');
+          finish(null, response.exit.value);
+        }
+      } catch { finish(new Error('Approval fixture operator response rejected')); }
+    };
+    const timeout = setTimeout(() => finish(new Error('Approval fixture operator deadline')), 30_000);
+    rpc.socket.addEventListener('message', listener);
+    rpc.socket.addEventListener('close', closed);
+    rpc.socket.addEventListener('error', closed);
+    try { rpc.socket.send(JSON.stringify({ _tag: 'Request', id, tag, payload, headers: [] })); }
+    catch (error) { finish(error); }
+  });
+}
+
 export function parseArguments(argv) {
   const options = {};
   for (let i = 0; i < argv.length; i += 2) {
@@ -102,9 +143,9 @@ async function exerciseServiceProof(options, fixture) {
     proof.stage = 'provider-scenarios';
     const positives = ['availability', 'text-only'];
     const negatives = ['auth', 'usage', 'code-only', 'child-failure', 'mixed', 'mixed-root'];
-    for (const name of [...positives, ...negatives, 'retry', 'update', 'hold']) {
+    for (const name of [...positives, ...negatives, 'retry', 'update', 'hold', 'approval', 'queued-work']) {
       const sent = await runner.send(name, 'kickoff', `C2C_FIXTURE:${name} ${state.nonce}`, 'auto');
-      if (['retry', 'update', 'hold'].includes(name)) {
+      if (['retry', 'update', 'hold', 'approval', 'queued-work'].includes(name)) {
         await runner.wait(name, (s) => s.thread.activeRunId === sent.runId, 'active fixture');
       } else await runner.ended(name, sent, name === 'child-failure' ? 'completed' : 'failed');
     }
@@ -114,6 +155,16 @@ async function exerciseServiceProof(options, fixture) {
     const snoozed = await runner.send('snoozed', 'kickoff', `C2C_FIXTURE:availability ${state.nonce}`, 'auto');
     await runner.ended('snoozed', snoozed, 'failed');
     runner.rpc ??= await runner.operator();
+    const approvalBefore = await runner.wait('approval', (s) => s.thread.pendingRequestCount === 1,
+      'real provider approval reaches T3 pending state');
+    assert(approvalBefore.thread.activeRunId, 'approval belongs to an active execution');
+    const queued = await runner.send('queued-work', 'queued', `C2C_FIXTURE_QUEUED_WORK ${state.nonce}`, 'queue');
+    assert.equal(queued.delivery, 'queued');
+    await runner.control('queued-work', 'fail');
+    await runner.wait('queued-work', (s) => s.thread.activeRunId === null
+      && s.recentRuns.some((run) => run.runId === state.cases['queued-work'].intents.kickoff.receipt.runId && run.status === 'failed')
+      && s.queuedRunIds.includes(queued.runId), 'failed root retains queued work');
+    negatives.push('queued-work');
     await runner.rpc.lifecycle(state.cases.snoozed.threadId, 'snooze');
     negatives.push('snoozed');
     await runner.fullAccessCase();
@@ -136,7 +187,33 @@ async function exerciseServiceProof(options, fixture) {
     }
     for (const name of negatives) assert.equal(continuations(await runner.snapshot(name)).length, 0, `${name} must not recover`);
     assert.equal(continuations(await runner.snapshot('retry')).length, 0, 'active retry must not recover');
+    const heldApproval = await runner.snapshot('approval');
+    assert.equal(heldApproval.thread.pendingRequestCount, 1, 'service preserves pending approval');
+    assert.equal(continuations(heldApproval).length, 0, 'approval-held root must not recover');
     proof.cases.recovery = { positives, negatives, activeRetryHeld: true, immutableContinue: true };
+    proof.stage = 'approval-resolution';
+    const approvalProjection = await approvalFixtureRpc(runner.rpc, 'orchestration.getThreadProjection', {
+      threadId: state.cases.approval.threadId,
+    });
+    assert.equal(approvalProjection.thread.id, state.cases.approval.threadId, 'owned fixture approval thread');
+    const pendingApproval = approvalProjection.runtimeRequests.filter((request) => request.status === 'pending');
+    assert.equal(pendingApproval.length, 1);
+    assert.equal(pendingApproval[0].kind, 'command');
+    const providerApproval = runner.providerLog().filter((row) => row.method === 'fixture/approval-request');
+    assert.equal(providerApproval.length, 1, 'exactly one synthetic approval request');
+    assert.equal(pendingApproval[0].nativeRequestRef.nativeId, providerApproval[0].itemId,
+      'decline targets only the offline fixture request');
+    await approvalFixtureRpc(runner.rpc, 'orchestration.dispatchCommand', {
+      type: 'runtime-request.respond', threadId: state.cases.approval.threadId,
+      commandId: crypto.randomUUID(), requestId: pendingApproval[0].id, decision: 'decline',
+    });
+    await runner.wait('approval', (s) => s.thread.pendingRequestCount === 0, 'fixture approval resolved');
+    await until(() => runner.providerLog().some((row) => row.method === 'fixture/approval-response'
+      && row.threadId === providerApproval[0].threadId && row.decision === 'decline'), 'provider receives fixture decline');
+    await runner.control('approval', 'fail');
+    await runner.wait('approval', (s) => s.thread.activeRunId === null && s.thread.status === 'failed'
+      && s.thread.pendingRequestCount === 0, 'availability failure after approval closes');
+    positives.push('approval');
     proof.stage = 'direct-delivery';
     const mappings = readPrivate(path.join(stateDir, 'state.json')).mappings;
     const registrations = () => JSON.parse(cli(['list', '--cross-repo', '--all', '--json']));
@@ -172,6 +249,14 @@ async function exerciseServiceProof(options, fixture) {
         'active delivery preserves the active run');
     }
     await runner.wait('second-sweep', (s) => continuations(s).length === 1 && s.thread.status === 'completed', 'shared sweep recovery');
+    await runner.wait('approval', (s) => continuations(s).length === 1 && s.thread.status === 'completed',
+      'native worker recovers only after approval closes and run fails');
+    const heldQueued = await runner.snapshot('queued-work');
+    assert(heldQueued.queuedRunIds.includes(queued.runId), 'monitor preserves existing queued work');
+    assert.equal(continuations(heldQueued).length, 0, 'queued work blocks availability recovery');
+    proof.cases.approval = { pendingDuringActiveRun: true, noContinueWhilePending: true,
+      decision: 'decline', recoveredAfterResolvedFailure: true, failedWithLiveApprovalTested: false };
+    proof.cases.queuedWork = { failedRoot: true, queuePreserved: true, noContinue: true };
     proof.cases.direct = { idle: true, active: true, attribution: 'agent/mcp', sharedBrokerFooter: true, providerNonceHashesMatched: true };
     proof.stage = 'doctor';
     const heartbeat = JSON.parse(cli(['t3', 'service', 'doctor', '--json'])).monitor;
