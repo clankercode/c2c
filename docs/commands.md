@@ -815,6 +815,13 @@ or provider credentials. Pair once, then run one service for each T3 home:
 | `t3 service recovery enable\|disable\|status [--json]` | Persist the model-availability monitor setting in the private connector config. Disabling holds recovery intents and never deletes queued work. |
 | `t3 service stop [--dry-run]` / `uninstall [--dry-run]` | Stop/disable or remove only the connector-owned unit for the exact selected T3 home/config/state paths. Foreign, differently scoped, or symlinked units are refused; systemd failures return nonzero and preserve the unit. Install/stop/uninstall serialize under an owned unit lock and recheck scope before changes. A competing operation returns nonzero and can be retried. State and queued mail remain on disk. |
 
+`doctor` includes `monitor.recoveryChecks`: up to 64 sorted thread decisions from
+the last sweep, with `lastCheckAt`, `nextDueAt`, outcome and a redacted hold reason.
+`omittedThreads` reports larger sweeps. Human output lists held threads. These
+checks describe eligibility; accepted deliveries remain in the durable journal.
+Normal policy holds (for example an active turn or a nonmatching failure) do not
+make an otherwise operational service unhealthy; failed checks do.
+
 Set `C2C_T3_RECOVERY=0` or pass `--recovery=false` to hold new model-availability
 recovery intents while preserving them for later inspection. The recovery
 monitor is fail-closed on incomplete activity, child/non-Codex evidence, queued

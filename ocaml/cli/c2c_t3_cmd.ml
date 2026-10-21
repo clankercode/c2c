@@ -540,7 +540,7 @@ let service_owner ~environment_id ~broker () =
   { Service.environment_id; broker; pid = Some (Unix.getpid ());
     pid_start_time = C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ())); cwd = Some (Sys.getcwd ()); opaque_host_id = None }
 
-let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
+let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery ~on_recovery =
   let broker = C2c_mcp.Broker.create ~root:(service_broker_root ()) in
   let owner = service_owner ~environment_id:(environment_id runtime) ~broker () in
   let recovery =
@@ -581,6 +581,7 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
              run_lwt_exn (Recovery.sweep ~enabled:recovery ~client ~state ~environment_id:owner.environment_id
                         ~credential_generation:(T3.credential_generation_of client) ~thread_ids ~clock:now ())
            in
+           on_recovery ~enabled:recovery ~thread_ids ~checked_at:(now ()) recovery_result;
            let preflight (entry : State.entry) =
              match entry.State.kind with
              | State.Inbound -> Lwt.return (Ok ())
@@ -644,7 +645,7 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
    final heartbeat from looking like a running monitor after a restart. *)
 let service_status_path () = state_dir () // "service-status.json"
 
-let write_service_status ~started_at ~finished_at ~interval ~recovery ~recovery_hold ~healthy =
+let write_service_status ~started_at ~finished_at ~interval ~recovery ~recovery_hold ~recovery_checks ~healthy =
   let json_float = function None -> `Null | Some value -> `Float value in
   let generation = C2c_pid_identity.read_pid_generation (Unix.getpid ()) in
   let fields =
@@ -658,6 +659,7 @@ let write_service_status ~started_at ~finished_at ~interval ~recovery ~recovery_
       ("recoveryRequested", `Bool recovery);
       ("recoveryEnabled", `Bool (recovery && recovery_hold = None));
       ("recoveryHold", match recovery_hold with Some reason -> `String reason | None -> `Null);
+      ("recoveryChecks", recovery_checks);
       ("healthy", `Bool healthy) ]
   in
   match C2c_io.write_file_atomic ~perm:0o600 (service_status_path ())
@@ -705,18 +707,27 @@ let foreground_cmd foreground once interval mode cross_repo recovery_override =
       let recovery_hold = ref (if configuration_healthy then None
         else Some "recovery configuration is invalid or unsafe; repair owned permissions or correct the config") in
       let started_at = now () in
-      write_service_status ~started_at ~finished_at:None ~interval ~recovery ~recovery_hold:!recovery_hold ~healthy:false;
+      let recovery_report = ref None in
+      let on_recovery ~enabled ~thread_ids ~checked_at result =
+        recovery_report := Some (enabled, thread_ids, checked_at, result) in
+      write_service_status ~started_at ~finished_at:None ~interval ~recovery ~recovery_hold:!recovery_hold ~recovery_checks:`Null ~healthy:false;
       let healthy =
         match authorized ~rebind:true () with
         | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error; false
         | Ok (client, runtime) ->
             if recovery then recovery_hold := Recovery.version_hold_reason runtime.T3.server_version;
-            (match service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery with
+            (match service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery ~on_recovery with
              | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error; false
              | Ok (scan, applied) -> scan.Service.complete && applied.Service.errors = []
                                     && configuration_healthy && !recovery_hold = None)
       in
-      write_service_status ~started_at ~finished_at:(Some (now ())) ~interval ~recovery ~recovery_hold:!recovery_hold ~healthy;
+      let finished_at = now () in
+      let recovery_checks = match !recovery_report with
+        | None -> `Null
+        | Some (enabled, thread_ids, checked_at, result) ->
+            Recovery.sweep_diagnostics ~enabled ~thread_ids ~checked_at
+              ~next_due_at:(finished_at +. interval) result in
+      write_service_status ~started_at ~finished_at:(Some finished_at) ~interval ~recovery ~recovery_hold:!recovery_hold ~recovery_checks ~healthy;
       if once then 0 else (ignore (Unix.select [] [] [] interval); loop ())
     in
     loop ())
@@ -834,7 +845,7 @@ let doctor_cmd json =
                                ("enabled", `Bool unit_enabled);
                                ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ]) ]
   in
-  if json then print_json result else
+  if json then print_json result else begin
     Printf.printf
       "T3 service doctor\n  runtime: %s\n  credential: %s\n  API: %s\n  access: %s\n  state: %s\n  recovery: %s\n  supervision: %s\n"
       (if runtime_ready then "ready" else "degraded")
@@ -845,6 +856,22 @@ let doctor_cmd json =
       (match effective_recovery_reason with Some reason -> "held: " ^ reason
        | None -> if recovery_enabled_value then "enabled" else "disabled by operator")
       (if unit_active then "active" else "inactive");
+    (match monitor with
+     | `Assoc fields ->
+         (match List.assoc_opt "recoveryChecks" fields with
+          | Some (`Assoc checks) ->
+              (match List.assoc_opt "threads" checks with
+               | Some (`List rows) -> List.iter (function
+                   | `Assoc fields ->
+                       (match List.assoc_opt "threadId" fields, List.assoc_opt "holdReason" fields with
+                        | Some (`String id), Some (`String reason) ->
+                            Printf.printf "  recovery thread %s: %s\n" id reason
+                        | _ -> ())
+                   | _ -> ()) rows
+               | _ -> ())
+          | _ -> ())
+     | _ -> ())
+  end;
   0
 
 let doctor_term = as_command (const doctor_cmd $ json_flag)

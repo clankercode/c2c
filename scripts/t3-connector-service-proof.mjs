@@ -173,9 +173,17 @@ async function exerciseServiceProof(options, fixture) {
     await runner.rpc.lifecycle(state.cases.snoozed.threadId, 'snooze');
     negatives.push('snoozed');
     await runner.fullAccessCase();
-    await runner.control('update', 'fail');
-    await runner.wait('update', (s) => s.thread.status === 'failed', 'updated terminal failure');
-    positives.push('update');
+    const updateKickoff = state.cases.update.intents.kickoff.receipt;
+    const updateErrors = (snapshot) => snapshot.items.filter((item) => item.type === 'error'
+      && item.runId === updateKickoff.runId && item.visibility === 'local'
+      && item.sourceThreadId === state.cases.update.threadId);
+    const updateRetry = await runner.wait('update', (s) => s.thread.activeRunId === updateKickoff.runId
+      && updateErrors(s).some((item) => item.status === 'running'), 'update retry error before worker observes it');
+    assert.equal(updateErrors(updateRetry).length, 1, 'one local retry error');
+    const retryError = updateErrors(updateRetry)[0];
+    assert(typeof retryError.itemId === 'string' && retryError.itemId.length > 0, 'retry error has an identity');
+    assert(Number.isSafeInteger(retryError.position) && retryError.position >= 0, 'retry error has a position');
+    assert.equal(continuations(updateRetry).length, 0, 'retry starts without Continue');
     proof.stage = 'sender-binding';
     const bind = JSON.parse(cli(['host', 'bind', '--environment-id', 'native-proof', '--thread-id', 'sender',
       '--workspace', root, '--owner-id', state.nonce, '--owner-pid', String(process.pid), '--alias', 'proof-sender', '--broker-root', broker]));
@@ -186,16 +194,59 @@ async function exerciseServiceProof(options, fixture) {
     const first = await sweep();
     assert.equal(first.intervalSeconds, 60, 'production default cadence');
     assert(first.nextSweepAt >= first.completedAt + 60, 'next sweep scheduled after completion');
+    const recoveryChecks = first.recoveryChecks;
+    assert(recoveryChecks && recoveryChecks.omittedThreads === 0, 'bounded completed recovery checks are persisted');
+    const checkedThread = (name) => recoveryChecks.threads.find((row) => row.threadId === state.cases[name].threadId);
+    for (const name of ['update', 'retry', 'mixed-root']) {
+      const check = checkedThread(name);
+      assert.equal(check?.outcome, 'held', `${name} hold is visible to operators`);
+      assert(typeof check.holdReason === 'string' && check.holdReason.length > 0);
+      assert(check.lastCheckAt >= first.lastSweepAt && check.lastCheckAt <= first.completedAt);
+      assert.equal(check.nextDueAt, first.nextSweepAt);
+    }
+    assert.equal(checkedThread('update').holdReason, 'thread has an active run');
+    assert.equal(checkedThread('mixed-root').holdReason, 'failed run has non-availability error evidence');
+    assert(!JSON.stringify(recoveryChecks).includes(state.nonce), 'operator checks exclude private fixture transcript');
+    proof.cases.recoveryDiagnostics = { bounded: true, heldRootsVisible: true,
+      checkAndDueTimes: true, privateTranscriptExcluded: true };
     for (const name of positives) {
       const snapshot = await runner.wait(name, (s) => continuations(s).length === 1 && s.thread.status === 'completed', 'service recovery');
       assert.equal(continuations(snapshot)[0].createdBy, 'agent');
     }
     for (const name of negatives) assert.equal(continuations(await runner.snapshot(name)).length, 0, `${name} must not recover`);
     assert.equal(continuations(await runner.snapshot('retry')).length, 0, 'active retry must not recover');
+    const updateHeld = await runner.snapshot('update');
+    assert.equal(updateHeld.thread.activeRunId, updateKickoff.runId, 'update still retrying after completed first sweep');
+    assert.equal(updateErrors(updateHeld).length, 1);
+    assert.equal(updateErrors(updateHeld)[0].itemId, retryError.itemId, 'first sweep observes same retry error');
+    assert.equal(updateErrors(updateHeld)[0].position, retryError.position, 'first sweep preserves retry position');
+    assert.equal(updateErrors(updateHeld)[0].status, 'running');
+    assert.equal(continuations(updateHeld).length, 0, 'first sweep must not Continue an active update retry');
+    proof.cases.inPlaceRetryUpdate = { runId: updateKickoff.runId, itemId: retryError.itemId,
+      position: retryError.position, firstSweepAt: first.lastSweepAt, firstSweepCompletedAt: first.completedAt,
+      retryStatus: updateErrors(updateHeld)[0].status, noContinueDuringRetry: true };
     const heldApproval = await runner.snapshot('approval');
     assert.equal(heldApproval.thread.pendingRequestCount, 1, 'service preserves pending approval');
     assert.equal(continuations(heldApproval).length, 0, 'approval-held root must not recover');
     proof.cases.recovery = { positives, negatives, activeRetryHeld: true, immutableContinue: true };
+    proof.stage = 'in-place-retry-transition';
+    // Stock activity reads omit structured retry metadata. The error's running
+    // -> failed status exposes this transition at the same item ID AND position.
+    await runner.control('update', 'fail');
+    const updateFailed = await runner.wait('update', (s) => s.thread.activeRunId === null
+      && s.thread.status === 'failed'
+      && s.recentRuns.some((run) => run.runId === updateKickoff.runId && run.status === 'failed')
+      && updateErrors(s).some((item) => item.status === 'failed'), 'same retry becomes terminal after first sweep');
+    assert.equal(updateErrors(updateFailed).length, 1, 'terminal failure retains one error row');
+    const failedError = updateErrors(updateFailed)[0];
+    assert.equal(failedError.itemId, retryError.itemId, 'terminal failure updates the existing error identity');
+    assert.equal(failedError.position, retryError.position, 'terminal failure does not append an error position');
+    assert.notEqual(failedError.status, retryError.status, 'retry status changes in place');
+    assert.equal(continuations(updateFailed).length, 0, 'transition alone does not send Continue');
+    Object.assign(proof.cases.inPlaceRetryUpdate, { failedItemId: failedError.itemId,
+      failedPosition: failedError.position, failedStatus: failedError.status,
+      terminalObservedAt: Date.now() / 1000, sameErrorIdentity: true, sameErrorPosition: true });
+    positives.push('update');
     proof.stage = 'approval-resolution';
     const approvalProjection = await approvalFixtureRpc(runner.rpc, 'orchestration.getThreadProjection', {
       threadId: state.cases.approval.threadId,
@@ -256,6 +307,22 @@ async function exerciseServiceProof(options, fixture) {
     await runner.wait('second-sweep', (s) => continuations(s).length === 1 && s.thread.status === 'completed', 'shared sweep recovery');
     await runner.wait('approval', (s) => continuations(s).length === 1 && s.thread.status === 'completed',
       'native worker recovers only after approval closes and run fails');
+    const updateCompleted = await runner.wait('update', (s) => continuations(s).length === 1
+      && s.thread.status === 'completed' && s.thread.activeRunId === null,
+      'later worker sweep recovers the in-place failure');
+    const updateContinue = continuations(updateCompleted)[0];
+    assert.equal(updateContinue.createdBy, 'agent', 'service generates the sole update Continue');
+    assert.equal(updateContinue.creationSource, 'mcp');
+    assert(updateCompleted.recentRuns.some((run) => run.runId === updateContinue.runId
+      && run.runId !== updateKickoff.runId && run.status === 'completed'), 'provider completes the recovery run');
+    const updateProviderContinues = runner.providerLog().filter((row) => row.threadId === state.cases.update.controls.fail.threadId
+      && (row.method === 'turn/start' || row.method === 'turn/steer') && row.continuation);
+    assert.equal(updateProviderContinues.length, 1, 'provider receives exactly one update Continue');
+    assert.equal(updateProviderContinues[0].method, 'turn/start', 'terminal update recovery starts a new provider turn');
+    assert(second.lastSweepAt > proof.cases.inPlaceRetryUpdate.terminalObservedAt, 'recovery sweep follows terminal observation');
+    Object.assign(proof.cases.inPlaceRetryUpdate, { recoverySweepAt: second.lastSweepAt,
+      recoverySweepCompletedAt: second.completedAt, serviceContinueCount: continuations(updateCompleted).length,
+      providerContinueCount: updateProviderContinues.length, providerCompleted: true });
     const heldQueued = await runner.snapshot('queued-work');
     assert(heldQueued.queuedRunIds.includes(queued.runId), 'monitor preserves existing queued work');
     assert.equal(continuations(heldQueued).length, 0, 'queued work blocks availability recovery');

@@ -302,3 +302,24 @@ def test_human_doctor_describes_requested_but_unavailable_recovery_as_held(tmp_p
     assert result.returncode == 0
     assert "recovery: held:" in result.stdout
     assert "recovery: enabled" not in result.stdout
+
+
+def test_doctor_exposes_last_sweep_thread_holds(tmp_path):
+    env = connector_env(tmp_path)
+    state_file, _ = initialize_state(env, tmp_path)
+    status_file = state_file.parent / "service-status.json"
+    status = json.loads(status_file.read_text())
+    status["recoveryChecks"] = {
+        "totalThreads": 1, "omittedThreads": 0,
+        "threads": [{"threadId": "fixture-root", "lastCheckAt": 120.0,
+                     "nextDueAt": 180.0, "outcome": "held",
+                     "holdReason": "activity error text is truncated",
+                     "recoveryId": None}],
+    }
+    status_file.write_text(json.dumps(status))
+    before = status_file.read_bytes()
+    report = json.loads(run_connector(env, tmp_path, "service", "doctor", "--json").stdout)
+    assert report["monitor"]["recoveryChecks"] == status["recoveryChecks"]
+    human = run_connector(env, tmp_path, "service", "doctor")
+    assert "recovery thread fixture-root: activity error text is truncated" in human.stdout
+    assert status_file.read_bytes() == before

@@ -280,6 +280,45 @@ let test_final_preflight () =
    | Error reason -> check (String.length reason > 0) "foreign identity has reason"
    | Ok () -> Alcotest.fail "foreign thread identity was accepted")
 
+let test_sweep_diagnostics () =
+  let open Yojson.Safe.Util in
+  let result : R.sweep_result =
+    { checked = 3; enqueued = []; duplicates = [];
+      held = [ ("a-held", "activity error text is truncated");
+               ("c-held", "PRIVATE-TRANSCRIPT-SENTINEL") ];
+      errors = [ ("b-error", "PRIVATE-TOKEN-SENTINEL") ] } in
+  let report = R.sweep_diagnostics ~enabled:true
+      ~thread_ids:[ "c-held"; "b-error"; "a-held"; "a-held" ]
+      ~checked_at:120. ~next_due_at:180. result in
+  let rows = report |> member "threads" |> to_list in
+  Alcotest.(check int) "distinct threads" 3 (report |> member "totalThreads" |> to_int);
+  Alcotest.(check string) "sorted first" "a-held" (List.hd rows |> member "threadId" |> to_string);
+  Alcotest.(check string) "safe policy reason" "activity error text is truncated"
+    (List.hd rows |> member "holdReason" |> to_string);
+  Alcotest.(check (float 0.)) "completed check time" 120.
+    (List.hd rows |> member "lastCheckAt" |> to_float);
+  Alcotest.(check (float 0.)) "next due" 180.
+    (List.hd rows |> member "nextDueAt" |> to_float);
+  Alcotest.(check string) "failed read visible" "read_failed"
+    (List.nth rows 1 |> member "outcome" |> to_string);
+  let encoded = Yojson.Safe.to_string report in
+  check (not (String.contains encoded 'P')) "no private error or transcript sentinel";
+  let many = List.init 70 (Printf.sprintf "root-%03d") in
+  let bounded = R.sweep_diagnostics ~enabled:true ~thread_ids:many
+      ~checked_at:120. ~next_due_at:180. result in
+  Alcotest.(check int) "bounded rows" 64 (bounded |> member "threads" |> to_list |> List.length);
+  Alcotest.(check int) "omitted count" 6 (bounded |> member "omittedThreads" |> to_int);
+  let disabled = R.sweep_diagnostics ~enabled:false ~thread_ids:[ "root" ]
+      ~checked_at:120. ~next_due_at:180. result in
+  let row = disabled |> member "threads" |> to_list |> List.hd in
+  check ((row |> member "lastCheckAt") = `Null) "disabled sweep does not claim a check";
+  Alcotest.(check string) "disabled reason" "recovery disabled" (row |> member "holdReason" |> to_string);
+  let unsafe_id = "PRIVATE-THREAD-SENTINEL\n" in
+  let redacted = R.sweep_diagnostics ~enabled:true ~thread_ids:[ unsafe_id ]
+      ~checked_at:120. ~next_due_at:180. result in
+  let id = redacted |> member "threads" |> to_list |> List.hd |> member "threadId" |> to_string in
+  check (String.starts_with ~prefix:"sha256:" id) "unsafe or oversized identifiers are hashed"
+
 let () =
   Alcotest.run "c2c_t3_recovery"
     [ ("matcher", [ Alcotest.test_case "availability text" `Quick test_matcher;
@@ -289,5 +328,6 @@ let () =
                     Alcotest.test_case "holds" `Quick test_holds ]);
       ("cadence", [ Alcotest.test_case "initial, spacing and overlap" `Quick test_cadence ]);
       ("sweep", [ Alcotest.test_case "held intent reconciliation" `Quick test_held_intent_reconciliation;
+                   Alcotest.test_case "bounded redacted diagnostics" `Quick test_sweep_diagnostics;
                    Alcotest.test_case "seam and disable" `Quick test_sweep_seam_and_disable;
                    Alcotest.test_case "final preflight" `Quick test_final_preflight ]) ]

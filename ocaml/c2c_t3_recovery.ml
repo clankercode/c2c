@@ -410,6 +410,64 @@ type sweep_result = {
   errors : (string * string) list;
 }
 
+(* Diagnostics never include API errors, transcript text or unbounded runtime
+   values. Unknown policy reasons remain useful without exposing their data. *)
+let diagnostic_hold_reason reason =
+  let known =
+    [ "thread has an active run"; "active run is unknown";
+      "pending request count is non-zero"; "pending request count is unknown";
+      "settled is set"; "settled is unknown"; "archived is set"; "archived is unknown";
+      "deleted is set"; "deleted is unknown"; "snooze is set"; "snooze is unknown";
+      "runtime mode is empty"; "runtime mode is unknown"; "full-access root is ineligible";
+      "activity history is incomplete"; "activity error text is truncated";
+      "no bounded run history"; "run history is truncated"; "thread has a stop marker";
+      "activity contains an unparseable error row"; "failed run has no local error evidence";
+      "failed run has child or foreign error evidence";
+      "failed run has retrying or unknown error status";
+      "failed run has non-availability error evidence"; "latest run is not failed";
+      "latest run status is unknown"; "provider identity or model is invalid";
+      "provider identity or model is unknown"; "thread has a parent";
+      "thread lineage is unknown"; "queue state is incomplete"; "thread has queued work";
+      "thread provider is not Codex"; "thread provider is unknown";
+      "recovery intent already pending for thread"; "recovery thread cool-down is active" ]
+  in
+  if List.mem reason known then reason
+  else if String.starts_with ~prefix:"latest run status is " reason then "latest run is not failed"
+  else "recovery policy held this thread"
+
+let diagnostic_thread_id id =
+  if String.length id <= 160 && String.for_all
+       (function 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '.' | '_' | '-' | ':' -> true | _ -> false) id
+  then id else "sha256:" ^ digest id
+
+let sweep_diagnostics ~enabled ~thread_ids ~checked_at ~next_due_at result =
+  let ids = List.sort_uniq String.compare thread_ids in
+  let rows = List.filteri (fun index _ -> index < 64) ids
+    |> List.map (fun thread_id ->
+         let outcome, reason, candidate =
+           if not enabled then "disabled", Some "recovery disabled", None
+           else match List.assoc_opt thread_id result.errors with
+           | Some _ -> "read_failed", Some "recovery check failed; inspect connector health", None
+           | None ->
+               (match List.assoc_opt thread_id result.held with
+                | Some reason -> "held", Some (diagnostic_hold_reason reason), None
+                | None ->
+                    (match List.find_opt (fun c -> c.thread_id = thread_id) result.enqueued with
+                     | Some candidate -> "enqueued", None, Some candidate
+                     | None ->
+                         (match List.find_opt (fun c -> c.thread_id = thread_id) result.duplicates with
+                          | Some candidate -> "already_recorded", None, Some candidate
+                          | None -> "not_checked", Some "no completed recovery decision", None)))
+         in
+         `Assoc [ ("threadId", `String (diagnostic_thread_id thread_id));
+           ("lastCheckAt", if enabled && outcome <> "not_checked" then `Float checked_at else `Null);
+           ("nextDueAt", `Float next_due_at); ("outcome", `String outcome);
+           ("holdReason", match reason with Some reason -> `String reason | None -> `Null);
+           ("recoveryId", match candidate with Some candidate -> `String candidate.request_id | None -> `Null) ])
+  in
+  `Assoc [ ("totalThreads", `Int (List.length ids));
+    ("omittedThreads", `Int (max 0 (List.length ids - 64))); ("threads", `List rows) ]
+
 type operations = {
   capabilities : unit -> (T3.capabilities, T3.error) result Lwt.t;
   read_activity : string -> (T3.activity, T3.error) result Lwt.t;

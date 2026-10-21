@@ -91,6 +91,13 @@ type sweep_result = {
   errors : (string * string) list;
 }
 
+val sweep_diagnostics :
+  enabled:bool -> thread_ids:string list -> checked_at:float -> next_due_at:float ->
+  sweep_result -> Yojson.Safe.t
+(** Bounded last-sweep decisions for operator diagnostics: at most 64 sorted
+    threads, fixed policy reasons and no raw API errors or transcript content.
+    This is observational metadata, never delivery authority. *)
+
 type operations = {
   capabilities : unit -> (C2c_t3_client.capabilities, C2c_t3_client.error) result Lwt.t;
   read_activity : string -> (C2c_t3_client.activity, C2c_t3_client.error) result Lwt.t;
