@@ -139,14 +139,17 @@ let test_sweep_seam_and_disable () =
     (fun () ->
       let state = match S.open_state ~environment_id:"env" ~dir () with Ok s -> s | Error _ -> Alcotest.fail "state" in
       let calls = ref [] in
+      let clock = ref 10. in
       let operations =
         { R.capabilities = (fun () ->
               calls := "capabilities" :: !calls;
               Lwt.return (Ok { T.runtime_mode = T.Known "auto"; interaction_mode = T.Unknown;
                                providers = [ { T.provider_instance_id = T.Known "p1";
                                                 driver_kind = T.Known "codex"; models = [ "gpt" ] } ] }));
-          read_activity = (fun id -> calls := ("read:" ^ id) :: !calls; Lwt.return (Ok (base_activity ~thread_id:id ())));
-          list_queue = (fun id -> calls := ("queue:" ^ id) :: !calls; Lwt.return (Ok (queue ()))) }
+          read_activity = (fun id -> calls := ("read:" ^ id) :: !calls;
+            clock := !clock +. 30.; Lwt.return (Ok (base_activity ~thread_id:id ())));
+          list_queue = (fun id -> calls := ("queue:" ^ id) :: !calls;
+            clock := !clock +. 1.; Lwt.return (Ok (queue ()))) }
       in
       let disabled = Lwt_main.run
         (R.sweep_with ~enabled:false ~operations ~state ~environment_id:"env"
@@ -156,11 +159,21 @@ let test_sweep_seam_and_disable () =
       Alcotest.(check (list string)) "disabled makes no calls" [] !calls;
       let result = Lwt_main.run
         (R.sweep_with ~operations ~state ~environment_id:"env" ~credential_generation:1
-           ~thread_ids:[ "b"; "a" ] ~clock:(fun () -> 0.) ())
+           ~thread_ids:[ "b"; "a" ] ~clock:(fun () -> !clock) ())
       in
       Alcotest.(check int) "two roots checked" 2 result.checked;
       Alcotest.(check (list string)) "sorted serialized reads"
         [ "queue:b"; "read:b"; "queue:a"; "read:a"; "capabilities" ] !calls;
+      Alcotest.(check (list (pair string (float 0.)))) "per-thread observation age"
+        [ ("a", 10.); ("b", 41.) ] result.checked_at;
+      let report = R.sweep_diagnostics ~enabled:true ~thread_ids:[ "b"; "a" ]
+          ~next_due_at:(!clock +. 60.) result in
+      let open Yojson.Safe.Util in
+      let rows = report |> member "threads" |> to_list in
+      Alcotest.(check (float 0.)) "early check stays old after slow later read" 10.
+        (List.hd rows |> member "lastCheckAt" |> to_float);
+      Alcotest.(check (float 0.)) "later thread has its own check time" 41.
+        (List.nth rows 1 |> member "lastCheckAt" |> to_float);
       S.close state)
 
 let test_held_intent_reconciliation () =
@@ -283,13 +296,14 @@ let test_final_preflight () =
 let test_sweep_diagnostics () =
   let open Yojson.Safe.Util in
   let result : R.sweep_result =
-    { checked = 3; enqueued = []; duplicates = [];
+    { checked = 3; checked_at = [ ("a-held", 120.); ("b-error", 130.); ("c-held", 140.) ];
+      enqueued = []; duplicates = [];
       held = [ ("a-held", "activity error text is truncated");
                ("c-held", "PRIVATE-TRANSCRIPT-SENTINEL") ];
       errors = [ ("b-error", "PRIVATE-TOKEN-SENTINEL") ] } in
   let report = R.sweep_diagnostics ~enabled:true
       ~thread_ids:[ "c-held"; "b-error"; "a-held"; "a-held" ]
-      ~checked_at:120. ~next_due_at:180. result in
+      ~next_due_at:180. result in
   let rows = report |> member "threads" |> to_list in
   Alcotest.(check int) "distinct threads" 3 (report |> member "totalThreads" |> to_int);
   Alcotest.(check string) "sorted first" "a-held" (List.hd rows |> member "threadId" |> to_string);
@@ -305,17 +319,17 @@ let test_sweep_diagnostics () =
   check (not (String.contains encoded 'P')) "no private error or transcript sentinel";
   let many = List.init 70 (Printf.sprintf "root-%03d") in
   let bounded = R.sweep_diagnostics ~enabled:true ~thread_ids:many
-      ~checked_at:120. ~next_due_at:180. result in
+      ~next_due_at:180. result in
   Alcotest.(check int) "bounded rows" 64 (bounded |> member "threads" |> to_list |> List.length);
   Alcotest.(check int) "omitted count" 6 (bounded |> member "omittedThreads" |> to_int);
   let disabled = R.sweep_diagnostics ~enabled:false ~thread_ids:[ "root" ]
-      ~checked_at:120. ~next_due_at:180. result in
+      ~next_due_at:180. result in
   let row = disabled |> member "threads" |> to_list |> List.hd in
   check ((row |> member "lastCheckAt") = `Null) "disabled sweep does not claim a check";
   Alcotest.(check string) "disabled reason" "recovery disabled" (row |> member "holdReason" |> to_string);
   let unsafe_id = "PRIVATE-THREAD-SENTINEL\n" in
   let redacted = R.sweep_diagnostics ~enabled:true ~thread_ids:[ unsafe_id ]
-      ~checked_at:120. ~next_due_at:180. result in
+      ~next_due_at:180. result in
   let id = redacted |> member "threads" |> to_list |> List.hd |> member "threadId" |> to_string in
   check (String.starts_with ~prefix:"sha256:" id) "unsafe or oversized identifiers are hashed"
 

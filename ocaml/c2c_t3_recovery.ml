@@ -404,6 +404,7 @@ let hold_reason ~state ~thread_id ~candidate ~now =
 
 type sweep_result = {
   checked : int;
+  checked_at : (string * float) list;
   enqueued : candidate list;
   duplicates : candidate list;
   held : (string * string) list;
@@ -440,7 +441,7 @@ let diagnostic_thread_id id =
        (function 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '.' | '_' | '-' | ':' -> true | _ -> false) id
   then id else "sha256:" ^ digest id
 
-let sweep_diagnostics ~enabled ~thread_ids ~checked_at ~next_due_at result =
+let sweep_diagnostics ~enabled ~thread_ids ~next_due_at result =
   let ids = List.sort_uniq String.compare thread_ids in
   let rows = List.filteri (fun index _ -> index < 64) ids
     |> List.map (fun thread_id ->
@@ -460,7 +461,8 @@ let sweep_diagnostics ~enabled ~thread_ids ~checked_at ~next_due_at result =
                           | None -> "not_checked", Some "no completed recovery decision", None)))
          in
          `Assoc [ ("threadId", `String (diagnostic_thread_id thread_id));
-           ("lastCheckAt", if enabled && outcome <> "not_checked" then `Float checked_at else `Null);
+           ("lastCheckAt", match enabled, List.assoc_opt thread_id result.checked_at with
+             | true, Some at -> `Float at | _ -> `Null);
            ("nextDueAt", `Float next_due_at); ("outcome", `String outcome);
            ("holdReason", match reason with Some reason -> `String reason | None -> `Null);
            ("recoveryId", match candidate with Some candidate -> `String candidate.request_id | None -> `Null) ])
@@ -518,11 +520,11 @@ let preflight_with ~operations ~environment_id ~credential_generation ~candidate
 let sweep_with ?(enabled = true) ~operations ~state ~environment_id ~credential_generation
     ~thread_ids ~clock () =
   if not enabled then
-    Lwt.return { checked = 0; enqueued = []; duplicates = []; held = []; errors = [] }
+    Lwt.return { checked = 0; checked_at = []; enqueued = []; duplicates = []; held = []; errors = [] }
   else
     operations.capabilities () >>= function
     | Error error ->
-        Lwt.return { checked = 0; enqueued = []; duplicates = []; held = [];
+        Lwt.return { checked = 0; checked_at = []; enqueued = []; duplicates = []; held = [];
                      errors = [ ("<capabilities>", T3.error_to_string error) ] }
     | Ok capabilities ->
         let provider_for id =
@@ -531,10 +533,15 @@ let sweep_with ?(enabled = true) ~operations ~state ~environment_id ~credential_
               if known_string p.provider_instance_id = Some id then known_string p.driver_kind else None)
             capabilities.T3.providers
         in
+        let checked_at = ref [] in
         let rec loop checked enqueued duplicates held errors = function
-          | [] -> Lwt.return { checked; enqueued = List.rev enqueued; duplicates = List.rev duplicates;
+          | [] -> Lwt.return { checked; checked_at = List.rev !checked_at;
+                               enqueued = List.rev enqueued; duplicates = List.rev duplicates;
                                held = List.rev held; errors = List.rev errors }
           | thread_id :: rest ->
+              (* Capture the age of this thread's observations before either
+                 read. Later slow roots must not freshen an earlier check. *)
+              checked_at := (thread_id, clock ()) :: !checked_at;
               operations.read_activity thread_id >>= function
               | Error error -> loop checked enqueued duplicates held
                   ((thread_id, T3.error_to_string error) :: errors) rest

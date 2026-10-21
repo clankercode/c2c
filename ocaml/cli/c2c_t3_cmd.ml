@@ -581,7 +581,7 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery ~on_recov
              run_lwt_exn (Recovery.sweep ~enabled:recovery ~client ~state ~environment_id:owner.environment_id
                         ~credential_generation:(T3.credential_generation_of client) ~thread_ids ~clock:now ())
            in
-           on_recovery ~enabled:recovery ~thread_ids ~checked_at:(now ()) recovery_result;
+           on_recovery ~enabled:recovery ~thread_ids recovery_result;
            let preflight (entry : State.entry) =
              match entry.State.kind with
              | State.Inbound -> Lwt.return (Ok ())
@@ -708,8 +708,8 @@ let foreground_cmd foreground once interval mode cross_repo recovery_override =
         else Some "recovery configuration is invalid or unsafe; repair owned permissions or correct the config") in
       let started_at = now () in
       let recovery_report = ref None in
-      let on_recovery ~enabled ~thread_ids ~checked_at result =
-        recovery_report := Some (enabled, thread_ids, checked_at, result) in
+      let on_recovery ~enabled ~thread_ids result =
+        recovery_report := Some (enabled, thread_ids, result) in
       write_service_status ~started_at ~finished_at:None ~interval ~recovery ~recovery_hold:!recovery_hold ~recovery_checks:`Null ~healthy:false;
       let healthy =
         match authorized ~rebind:true () with
@@ -724,8 +724,8 @@ let foreground_cmd foreground once interval mode cross_repo recovery_override =
       let finished_at = now () in
       let recovery_checks = match !recovery_report with
         | None -> `Null
-        | Some (enabled, thread_ids, checked_at, result) ->
-            Recovery.sweep_diagnostics ~enabled ~thread_ids ~checked_at
+        | Some (enabled, thread_ids, result) ->
+            Recovery.sweep_diagnostics ~enabled ~thread_ids
               ~next_due_at:(finished_at +. interval) result in
       write_service_status ~started_at ~finished_at:(Some finished_at) ~interval ~recovery ~recovery_hold:!recovery_hold ~recovery_checks ~healthy;
       if once then 0 else (ignore (Unix.select [] [] [] interval); loop ())

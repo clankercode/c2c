@@ -85,6 +85,7 @@ val hold_reason :
 
 type sweep_result = {
   checked : int;
+  checked_at : (string * float) list;
   enqueued : candidate list;
   duplicates : candidate list;
   held : (string * string) list;
@@ -92,7 +93,7 @@ type sweep_result = {
 }
 
 val sweep_diagnostics :
-  enabled:bool -> thread_ids:string list -> checked_at:float -> next_due_at:float ->
+  enabled:bool -> thread_ids:string list -> next_due_at:float ->
   sweep_result -> Yojson.Safe.t
 (** Bounded last-sweep decisions for operator diagnostics: at most 64 sorted
     threads, fixed policy reasons and no raw API errors or transcript content.
