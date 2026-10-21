@@ -532,7 +532,13 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
            (* All enrolled aliases live in the shared sessions broker, regardless
               of the provider worktree. Replies must explicitly select that
               broker too; an operator flag cannot determine the message scope. *)
-           List.iter (fun candidate -> ignore (Service.accept_inbox ~mode ~cross_repo:true ~owner ~state ~mapping:(Option.get candidate.Service.mapping) ())) applied.published;
+           let acceptance_errors = ref [] in
+           List.iter
+             (fun candidate ->
+               let accepted = Service.accept_inbox ~mode ~cross_repo:true ~owner ~state
+                   ~mapping:(Option.get candidate.Service.mapping) () in
+               acceptance_errors := accepted.Service.errors @ !acceptance_errors)
+             applied.published;
            let thread_ids = List.map (fun candidate -> candidate.Service.thread.thread_id) applied.published in
            let recovery_result =
              run_lwt_exn (Recovery.sweep ~enabled:recovery ~client ~state ~environment_id:owner.environment_id
@@ -575,7 +581,9 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo:_ ~recovery =
            in
            (match run_lwt_exn (dispatch 0) with
             | Ok () ->
-                if recovery_result.Recovery.errors <> [] then
+                if !acceptance_errors <> [] then
+                  Error "inbound mailbox acceptance failed; delivery is degraded"
+                else if recovery_result.Recovery.errors <> [] then
                   Error "model-availability checks failed; recovery is degraded"
                 else Ok (scan, applied)
             | Error reason -> Error reason)

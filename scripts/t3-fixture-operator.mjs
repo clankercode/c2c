@@ -113,6 +113,14 @@ export class FixtureRpc {
     });
   }
 
+  lifecycle(threadId, action) {
+    assert(['snooze', 'settle', 'archive'].includes(action), 'bounded fixture lifecycle action');
+    return this.#request('orchestration.dispatchCommand', {
+      type: `thread.${action}`, commandId: crypto.randomUUID(), threadId,
+      ...(action === 'snooze' ? { snoozedUntil: new Date(Date.now() + 600_000).toISOString() } : {}),
+    });
+  }
+
   close() { this.#fail('Fixture RPC closed'); this.socket.close(); }
 }
 

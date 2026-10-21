@@ -29,11 +29,9 @@ export function parseArguments(argv) {
   return { root: options['--root'], t3Bin: options['--t3-bin'], c2cBin: options['--c2c-bin'] };
 }
 
-export async function runServiceProof(options) {
+async function exerciseServiceProof(options, fixture) {
   // A fresh private root prevents accidental replay of launch intents. Evidence
   // from an incomplete run stays on disk and requires a new explicit root.
-  assert(!fs.existsSync(options.root), 'proof root must be fresh');
-  const fixture = await startFixture(options);
   const root = options.root;
   const home = path.join(root, 'connector-home');
   const config = path.join(root, 'connector-config');
@@ -111,6 +109,14 @@ export async function runServiceProof(options) {
       } else await runner.ended(name, sent, name === 'child-failure' ? 'completed' : 'failed');
     }
     await runner.thread('idle');
+    await runner.interruptWhileActive();
+    negatives.push('interrupt');
+    const snoozed = await runner.send('snoozed', 'kickoff', `C2C_FIXTURE:availability ${state.nonce}`, 'auto');
+    await runner.ended('snoozed', snoozed, 'failed');
+    runner.rpc ??= await runner.operator();
+    await runner.rpc.lifecycle(state.cases.snoozed.threadId, 'snooze');
+    negatives.push('snoozed');
+    await runner.fullAccessCase();
     await runner.control('update', 'fail');
     await runner.wait('update', (s) => s.thread.status === 'failed', 'updated terminal failure');
     positives.push('update');
@@ -133,7 +139,12 @@ export async function runServiceProof(options) {
     proof.cases.recovery = { positives, negatives, activeRetryHeld: true, immutableContinue: true };
     proof.stage = 'direct-delivery';
     const mappings = readPrivate(path.join(stateDir, 'state.json')).mappings;
+    const registrations = () => JSON.parse(cli(['list', '--cross-repo', '--all', '--json']));
+    const beforeRegistrations = registrations();
     const mappingFor = (name) => mappings.find((m) => m.thread_id === state.cases[name].threadId || m.threadId === state.cases[name].threadId);
+    const extra = await runner.send('second-sweep', 'kickoff', `C2C_FIXTURE:availability ${state.nonce}`, 'auto');
+    await runner.ended('second-sweep', extra, 'failed');
+    positives.push('second-sweep');
     const deliveries = [];
     for (const name of ['idle', 'hold']) {
       const mapping = mappingFor(name);
@@ -152,8 +163,16 @@ export async function runServiceProof(options) {
       assert.equal(messages[0].creationSource, 'mcp');
       assert(messages[0].text.includes("c2c send --cross-repo 'proof-sender'"), 'shared-broker reply recipe');
       assert(messages[0].text.includes('BEGIN C2C DATA'), 'peer DATA boundary');
+      const expectedMethod = name === 'idle' ? 'turn/start' : 'turn/steer';
+      const nonceHash = crypto.createHash('sha256').update(nonce).digest('hex');
+      await until(() => fs.readFileSync(path.join(root, 'provider.ndjson'), 'utf8').trim().split('\n')
+        .filter(Boolean).map((line) => JSON.parse(line))
+        .some((row) => row.method === expectedMethod && row.proofNonceHashes?.includes(nonceHash)), 'provider receives nonce');
+      if (name === 'hold') assert.equal(snapshot.thread.activeRunId, state.cases.hold.intents.kickoff.receipt.runId,
+        'active delivery preserves the active run');
     }
-    proof.cases.direct = { idle: true, active: true, attribution: 'agent/mcp', sharedBrokerFooter: true };
+    await runner.wait('second-sweep', (s) => continuations(s).length === 1 && s.thread.status === 'completed', 'shared sweep recovery');
+    proof.cases.direct = { idle: true, active: true, attribution: 'agent/mcp', sharedBrokerFooter: true, providerNonceHashesMatched: true };
     proof.stage = 'doctor';
     const heartbeat = JSON.parse(cli(['t3', 'service', 'doctor', '--json'])).monitor;
     assert.equal(heartbeat.running, true, 'doctor observes live owner generation');
@@ -166,7 +185,22 @@ export async function runServiceProof(options) {
     startService();
     await sweep(second.lastSweepAt);
     for (const name of positives) assert.equal(continuations(await runner.snapshot(name)).length, 1, 'restart dedupe');
-    proof.cases.restart = { aliasesStable: true, duplicateContinuations: 0 };
+    const afterMappings = readPrivate(path.join(stateDir, 'state.json')).mappings;
+    for (const mapping of mappings) assert(afterMappings.some((after) =>
+      after.thread_id === mapping.thread_id && after.alias === mapping.alias), 'persisted aliases survive restart');
+    const afterRegistrations = registrations();
+    const registrationKeys = (rows) => rows.filter((row) => row.alias.startsWith('t3-'))
+      .map((row) => [row.alias, row.session_id]).sort();
+    const priorAliases = new Set(beforeRegistrations.map((row) => row.alias));
+    assert.deepEqual(registrationKeys(afterRegistrations.filter((row) => priorAliases.has(row.alias))),
+      registrationKeys(beforeRegistrations), 'same broker routes republished');
+    assert(registrationKeys(afterRegistrations).length > 0, 'live root routes republished');
+    const restartNonce = `C2C_NATIVE_restart_${state.nonce}`;
+    cli(['host', 'send', ...senderArgs, '--to', mappingFor('idle').alias, '--content', restartNonce]);
+    await sweep(status().lastSweepAt);
+    await runner.wait('idle', (s) => s.items.some((i) => i.type === 'user_message' && i.text?.includes(restartNonce)),
+      'delivery through pre-restart alias');
+    proof.cases.restart = { aliasesStable: true, brokerRoutesStable: true, oldAliasDelivery: true, duplicateContinuations: 0 };
     await stopService();
     // Disable before introducing a new eligible failure; no test code submits a
     // continuation or edits the connector journal to manufacture this result.
@@ -175,26 +209,91 @@ export async function runServiceProof(options) {
     delete env.C2C_T3_RECOVERY;
     const disabled = await runner.send('disabled', 'kickoff', `C2C_FIXTURE:availability ${state.nonce}`, 'auto');
     await runner.ended('disabled', disabled, 'failed');
+    const beforeDisabledSweep = status().lastSweepAt;
     cli(['t3', 'service', '--once']);
+    const disabledSweep = status();
+    assert(disabledSweep.lastSweepAt > beforeDisabledSweep && disabledSweep.completedAt, 'fresh disabled sweep completed');
+    assert.equal(disabledSweep.healthy, true, 'disabled sweep reached healthy discovery');
+    assert.equal(disabledSweep.recoveryEnabled, false, 'durable disable applied to service');
+    assert(readPrivate(path.join(stateDir, 'state.json')).mappings.some((m) =>
+      m.thread_id === state.cases.disabled.threadId && !m.tombstone), 'disabled target enrolled');
     assert.equal(continuations(await runner.snapshot('disabled')).length, 0, 'durable disable');
     proof.cases.disable = true;
+    proof.stage = 'retirement-and-repair';
+    const retired = mappingFor('idle');
+    const retiredRegistration = afterRegistrations.find((row) => row.alias === retired.alias);
+    const retiredNonce = `C2C_NATIVE_retired_${state.nonce}`;
+    cli(['host', 'send', ...senderArgs, '--to', retired.alias, '--content', retiredNonce]);
+    await runner.rpc.lifecycle(state.cases.idle.threadId, 'archive');
+    cli(['t3', 'service', '--once']);
+    assert(readPrivate(path.join(stateDir, 'state.json')).mappings.some((m) =>
+      m.thread_id === state.cases.idle.threadId && m.tombstone), 'retirement retains tombstone');
+    assert(!registrations().some((row) => row.alias === retired.alias), 'retirement stops advertising');
+    const pendingMail = JSON.parse(fs.readFileSync(path.join(broker, `${retiredRegistration.session_id}.inbox.json`), 'utf8'));
+    assert(pendingMail.some((message) => message.content === retiredNonce), 'retirement preserves queued mail');
+    const credentialHash = sha256(path.join(config, 'credential.json'));
+    const stateHash = sha256(path.join(stateDir, 'state.json'));
+    fs.chmodSync(config, 0o755);
+    cli(['t3', 'service', 'repair', '--json']);
+    assert.equal(fs.statSync(config).mode & 0o777, 0o700, 'repair private permissions');
+    assert.equal(sha256(path.join(config, 'credential.json')), credentialHash, 'repair preserves credential');
+    assert.equal(sha256(path.join(stateDir, 'state.json')), stateHash, 'repair preserves journal and tombstones');
+    proof.cases.retirementAndRepair = { tombstone: true, pendingMailPreserved: true, credentialPreserved: true };
+    const holds = readPrivate(path.join(stateDir, 'state.json')).holds;
+    assert(holds.some((hold) => hold.thread_id === state.cases['full-access'].launch.threadId), 'permission-ineligible root has durable hold');
+    proof.cases.permissionHold = true;
     const journal = readPrivate(path.join(stateDir, 'state.json'));
+    const submissions = journal.acked.map((entry) => entry.result?.submitted_at).filter(Number.isFinite).sort((a, b) => a - b);
+    assert(submissions.length >= 7, 'recovery and inbound submission receipts');
+    const gaps = submissions.slice(1).map((time, index) => time - submissions[index]);
+    assert(gaps.every((gap) => gap >= 0.99), 'shared process-wide one-second dispatch cap');
+    proof.cases.rateLimit = { submitted: submissions.length, minimumSpacingSeconds: Math.min(...gaps) };
     proof.journal = { pending: journal.journal.length, acked: journal.acked.length };
     proof.completedAt = new Date().toISOString();
-    proof.status = 'PASS';
-    delete proof.stage;
-    writePrivate(path.join(root, 'native-service-proof.json'), proof);
     return proof;
   } catch (error) {
     proof.status = 'FAIL';
     proof.failureKind = error.name;
+    proof.failureFrames = String(error.stack ?? '').split('\n').filter((line) => line.trim().startsWith('at '));
     writePrivate(path.join(root, 'native-service-proof.json'), proof);
     throw error;
   } finally {
     await stopService();
     runner?.rpc?.close();
-    await stopFixture({ root, t3Bin: options.t3Bin });
   }
+}
+
+export async function runServiceProof(options) {
+  assert(!fs.existsSync(options.root), 'proof root must be fresh');
+  // Validate the executables before creating or launching anything.
+  for (const file of [options.t3Bin, options.c2cBin]) {
+    assert(fs.statSync(fs.realpathSync(file)).isFile(), 'proof executable must be a regular file');
+    fs.accessSync(file, fs.constants.X_OK);
+  }
+  let fixture;
+  let proof;
+  let failure;
+  try {
+    fixture = await startFixture(options);
+    proof = await exerciseServiceProof(options, fixture);
+  } catch (error) { failure = error; }
+  // Always attempt fixture cleanup even when the service cleanup failed.
+  if (fixture) {
+    try { await stopFixture({ root: options.root, t3Bin: options.t3Bin }); }
+    catch (error) { failure ??= error; }
+  }
+  if (failure) {
+    const output = path.join(options.root, 'native-service-proof.json');
+    try { proof ??= readPrivate(output); } catch { /* Setup failed before a proof existed. */ }
+    if (fs.existsSync(options.root)) writePrivate(output, { ...proof, status: 'FAIL',
+      failureKind: failure.name, failureFrames: String(failure.stack ?? '').split('\n').filter((line) => line.trim().startsWith('at ')) });
+    throw failure;
+  }
+  proof.status = 'PASS';
+  proof.cleanupCompleted = true;
+  delete proof.stage;
+  writePrivate(path.join(options.root, 'native-service-proof.json'), proof);
+  return proof;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

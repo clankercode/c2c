@@ -269,7 +269,8 @@ function handle(message) {
   const text = inputText(params);
   journal({ method: method.slice(0, 128), ...(state ? { threadId: state.thread.id } : {}),
     ...(method === 'turn/start' || method === 'turn/steer' ?
-      { inputBytes: Buffer.byteLength(text), inputHash: hash(text), continuation: text.trim() === 'Continue' } : {}) });
+      { inputBytes: Buffer.byteLength(text), inputHash: hash(text), continuation: text.trim() === 'Continue',
+        proofNonceHashes: [...new Set(text.match(/\bC2C_NATIVE_[A-Za-z0-9_-]+/g) ?? [])].map(hash) } : {}) });
   if (stopping) return;
   if (id === undefined) {
     if (method !== 'initialized') journal({ method: 'fixture/unknown-notification', name: method.slice(0, 128) });
