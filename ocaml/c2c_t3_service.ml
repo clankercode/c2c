@@ -977,6 +977,9 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                                   ("reason", `String reason) ]));
                     Lwt.return (Held reason)
                 | Ok () ->
+                (* Preflight performs awaited MCP reads. Its duration cannot
+                   consume the interval reserved for the next submission. *)
+                let now = dispatcher.clock () in
                 let attempts = Option.value (int_member "attempts" entry.payload) ~default:0 in
                 let inflight =
                   with_fields entry.payload
@@ -994,14 +997,26 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                       | Error error -> Lwt.return (Held error)
                       | Ok () ->
                           dispatcher.last_thread <- Some (dispatch_lane entry);
+                          let submitted_at = dispatcher.clock () in
                           dispatcher.send ~thread_id ~message:formatted
-                            ~mode ~client_request_id:request_id >>= function
+                            ~mode ~client_request_id:request_id >>= fun result ->
+                          (* Reserving from completion is conservative: neither
+                             slow preflight, durable writes nor an awaited send
+                             can allow a subsequent call to burst past the cap.
+                             Keep the pre-send reservation for crash recovery. *)
+                          let completed_at = dispatcher.clock () in
+                          match State.record_dispatch_at dispatcher.state completed_at with
+                          | Error error ->
+                              dispatcher.rebind_required <- Some error;
+                              Lwt.return (Rebind_required error)
+                          | Ok () ->
+                          (match result with
                           | Ok receipt ->
                               let receipt_json =
                                 `Assoc [ ("thread_id", `String receipt.receipt_thread_id);
                                   ("message_id", `String receipt.message_id);
                                   ("run_id", `String receipt.run_id);
-                                  ("submitted_at", `Float now) ]
+                                  ("submitted_at", `Float submitted_at) ]
                               in
                               (match State.journal_ack_with_result dispatcher.state
                                        ~seq:entry.seq ~result:receipt_json with
@@ -1025,7 +1040,7 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                               Lwt.return
                                 (if requires_rebind then Rebind_required (T3.error_to_string error)
                                  else if permanent then Held (T3.error_to_string error)
-                                 else Retained (T3.error_to_string error))))))
+                                 else Retained (T3.error_to_string error)))))))
 
 let dispatch_batch ?(max_steps = 16) ?(flush_deferrable = false) dispatcher =
   if max_steps <= 0 then invalid_arg "T3 dispatcher batch budget must be positive";

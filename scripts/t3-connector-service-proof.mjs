@@ -247,7 +247,16 @@ async function exerciseServiceProof(options, fixture) {
     assert(submissions.length >= 7, 'recovery and inbound submission receipts');
     const gaps = submissions.slice(1).map((time, index) => time - submissions[index]);
     assert(gaps.every((gap) => gap >= 0.99), 'shared process-wide one-second dispatch cap');
-    proof.cases.rateLimit = { submitted: submissions.length, minimumSpacingSeconds: Math.min(...gaps) };
+    const providerRows = fs.readFileSync(path.join(root, 'provider.ndjson'), 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const serviceReceipts = providerRows.filter((row) =>
+      (row.method === 'turn/start' || row.method === 'turn/steer')
+      && (row.continuation || row.proofNonceHashes?.length));
+    const receivedAt = serviceReceipts.map((row) => row.timestamp).sort((a, b) => a - b);
+    const receiptGaps = receivedAt.slice(1).map((time, index) => time - receivedAt[index]);
+    assert(receivedAt.length >= 7, 'independent provider submission evidence');
+    assert(receiptGaps.every((gap) => gap >= 1000), 'provider-observed one-second spacing');
+    proof.cases.rateLimit = { submitted: submissions.length, minimumSpacingSeconds: Math.min(...gaps),
+      providerReceipts: receivedAt.length, providerMinimumSpacingMs: Math.min(...receiptGaps) };
     proof.journal = { pending: journal.journal.length, acked: journal.acked.length };
     proof.completedAt = new Date().toISOString();
     return proof;

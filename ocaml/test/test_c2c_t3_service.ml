@@ -472,6 +472,32 @@ let test_deferrable_waits_for_explicit_flush () =
        | _ -> Alcotest.fail "explicit flush did not release deferrable entry");
       Alcotest.(check int) "flushed once" 1 !calls)
 
+let test_slow_preflight_and_send_preserve_spacing () =
+  let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
+  Fun.protect
+    ~finally:(fun () -> State.close state; cleanup_dir broker_root; cleanup_dir state_dir)
+    (fun () ->
+      List.iter (fun content -> C2c_mcp.Broker.enqueue_message broker
+        ~from_alias:"peer" ~to_alias:mapping.alias ~content ()) [ "first"; "second" ];
+      ignore (S.accept_inbox ~owner ~state ~mapping ());
+      let now = ref 0. and submissions = ref [] in
+      let preflight _ = now := !now +. 1.2; Lwt.return (Ok ()) in
+      let send ~thread_id ~message:_ ~mode:_ ~client_request_id:_ =
+        submissions := !now :: !submissions;
+        now := !now +. 0.4;
+        Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
+          message_id = "m"; run_id = "r" })
+      in
+      let dispatcher = S.create_dispatcher ~state ~preflight ~send ~clock:(fun () -> !now) () in
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Submitted _ -> () | _ -> Alcotest.fail "first submission failed");
+      Alcotest.(check (float 0.0001)) "send timestamp follows slow preflight" 1.2 (List.hd !submissions);
+      Alcotest.(check (option (float 0.0001))) "completion boundary is durable" (Some 1.6) (State.last_dispatch_at state);
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Waiting delay -> Alcotest.(check bool) "whole second remains after send" true (delay >= 0.999)
+       | _ -> Alcotest.fail "preflight consumed the submission spacing");
+      Alcotest.(check int) "second send held" 1 (List.length !submissions))
+
 let test_preflight_holds_stale_intent_before_send () =
   let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
   Fun.protect
@@ -908,6 +934,7 @@ let () =
                       Alcotest.test_case "explicit mode" `Quick test_explicit_mode_is_preserved;
                       Alcotest.test_case "deferrable explicit flush" `Quick test_deferrable_waits_for_explicit_flush;
                       Alcotest.test_case "preflight holds stale" `Quick test_preflight_holds_stale_intent_before_send;
+                      Alcotest.test_case "slow preflight spacing" `Quick test_slow_preflight_and_send_preserve_spacing;
                       Alcotest.test_case "rebind retries" `Quick test_rebind_errors_requeue_exact_request;
                       Alcotest.test_case "auth denial held" `Quick test_auth_denied_is_held_until_repair;
                       Alcotest.test_case "batch budget" `Quick test_dispatch_batch_has_maintenance_budget;
