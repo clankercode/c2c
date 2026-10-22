@@ -3722,8 +3722,8 @@ open C2c_mcp_helpers
      archive-before-clear invariant as drain_inbox: matching non-ephemeral
      messages are appended to the archive BEFORE the inbox is rewritten, all
      under the per-inbox lock. *)
-  let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) ?(durable = false) t ~session_id ~pred =
-    with_raw_drain_authorization t ~session_id ~drained_by (fun () ->
+  (* Caller holds the registry lock and has checked mailbox ownership. *)
+  let drain_inbox_matching_authorized ~drained_by ~strict ~durable t ~session_id ~pred =
       with_inbox_lock t ~session_id (fun () ->
           let messages = load_inbox ~strict t ~session_id in
           let matching, rest = List.partition pred messages in
@@ -3741,7 +3741,40 @@ open C2c_mcp_helpers
                end;
                save_inbox t ~session_id rest;
                if durable then C2c_io.fsync_file_and_parent (inbox_path t ~session_id));
-          matching))
+          matching)
+
+  let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) ?(durable = false) t ~session_id ~pred =
+    with_raw_drain_authorization t ~session_id ~drained_by (fun () ->
+      drain_inbox_matching_authorized ~drained_by ~strict ~durable t ~session_id ~pred)
+
+  (* Selected ACK for a bound native caller. Unlike legacy raw drains, a
+     refused mailbox is an error, never an apparently successful empty ACK.
+     Registry -> inbox locking fences service publication and concurrent
+     arrivals. Strict parsing preserves malformed queues for recovery;
+     durable archive-before-rewrite preserves the existing retry contract. *)
+  let ack_inbox t ~session_id ~message_ids =
+    let seen = Hashtbl.create (List.length message_ids) in
+    let message_ids = List.filter (fun id ->
+      if Hashtbl.mem seen id then false
+      else (Hashtbl.add seen id (); true)) message_ids in
+    if message_ids = [] || List.exists (fun id -> String.trim id = "") message_ids then
+      Error "at least one non-empty message ID is required"
+    else with_registry_lock t (fun () ->
+      let regs = load_registrations_strict t in
+      if not (List.exists (fun (reg : registration) -> reg.session_id = session_id) regs) then
+        Error "caller session is not registered in this broker"
+      else if not (raw_drain_is_authorized t ~session_id ~drained_by:"cli_ack") then
+        Error "mailbox is service-owned; use the c2c host transport"
+      else
+        let messages =
+          drain_inbox_matching_authorized ~drained_by:"cli_ack" ~strict:true ~durable:true
+            t ~session_id ~pred:(fun m -> match m.message_id with
+              | Some id -> Hashtbl.mem seen id
+              | None -> false)
+        in
+        let acknowledged = Hashtbl.create (List.length messages) in
+        List.iter (fun m -> Option.iter (fun id -> Hashtbl.replace acknowledged id ()) m.message_id) messages;
+        Ok (List.partition (fun id -> Hashtbl.mem acknowledged id) message_ids))
 
   type sweep_result =
     { dropped_regs : registration list

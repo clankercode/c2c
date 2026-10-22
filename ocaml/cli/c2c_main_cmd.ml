@@ -13,6 +13,7 @@ let all_cmds =
   ; C2c_inbox_cmd.open_pending_reply
   ; C2c_inbox_cmd.check_pending_reply
   ; C2c_inbox_cmd.poll_inbox
+  ; C2c_inbox_cmd.ack_inbox
   ; C2c_inbox_cmd.peek_inbox
   ; C2c_inbox_cmd.inbox (* B183 synonym for peek-inbox *)
   ; C2c_inbox_cmd.wait_inbox

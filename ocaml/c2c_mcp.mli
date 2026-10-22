@@ -593,6 +593,15 @@ module Broker : sig
       pending file after replay. Returns the number of messages replayed. *)
   val drain_inbox : ?drained_by:string -> t -> session_id:string -> message list
   val drain_inbox_push : ?drained_by:string -> t -> session_id:string -> message list
+  (** Acknowledge exact IDs in the registered caller's mailbox. IDs are
+      deduplicated in request order; return [(acknowledged, missing)].
+      Missing IDs succeed idempotently. Service-owned T3 rows are refused.
+      Strict parsing and durable archive-before-rewrite keep failed queues
+      retryable; ephemeral messages are never archived. *)
+  val ack_inbox :
+    t -> session_id:string -> message_ids:string list ->
+    ((string list * string list), string) result
+
   val drain_inbox_matching :
     ?drained_by:string -> ?strict:bool -> ?durable:bool -> t -> session_id:string -> pred:(message -> bool) -> message list
   (** Like [drain_inbox] but drains only messages satisfying [pred];

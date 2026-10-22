@@ -380,6 +380,37 @@ let wait_inbox_cmd =
   run_poll_inbox ~cmd_name:"wait-inbox" ~wait:true ~json ~peek ~session_id_opt
     ~alias_opt ~cross_repo ~timeout_opt ~poll_interval_opt ~from_opt
 
+let ack_inbox_cmd =
+  let message_ids =
+    Cmdliner.Arg.(non_empty & opt_all string [] & info [ "message-id" ] ~docv:"ID"
+      ~doc:"Acknowledge this exact message ID from your bound inbox. Repeat for multiple IDs; missing IDs succeed idempotently.")
+  in
+  let+ json = json_flag
+  and+ message_ids = message_ids in
+  reject_raw_consumer_if_disabled ~surface:"ack-inbox";
+  let fail message =
+    if json then print_json (`Assoc [ ("ok", `Bool false); ("error", `String message) ])
+    else Printf.eprintf "error: %s\n%!" message;
+    exit 1
+  in
+  (* Deliberately avoid resolve_session_id_for_inbox: its historical alias
+     fallback could select somebody else's mailbox when our binding is stale. *)
+  match Sys.getenv_opt "C2C_MCP_SESSION_ID" |> Option.map String.trim with
+  | None | Some "" -> fail "cannot determine caller session ID; set C2C_MCP_SESSION_ID"
+  | Some session_id ->
+      (try
+         let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+         match C2c_mcp.Broker.ack_inbox broker ~session_id ~message_ids with
+         | Error message -> fail message
+         | Ok (acknowledged, missing) ->
+             if json then
+               print_json (`Assoc [ ("ok", `Bool true);
+                 ("acknowledged", `List (List.map (fun id -> `String id) acknowledged));
+                 ("missing", `List (List.map (fun id -> `String id) missing)) ])
+             else Printf.printf "acknowledged %d; missing %d\n%!"
+               (List.length acknowledged) (List.length missing)
+       with exn -> fail (Printexc.to_string exn))
+
 let peek_inbox_cmd =
   let session_id_flag =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id"; "s" ] ~docv:"ID"
@@ -443,6 +474,12 @@ let peek_inbox : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.")
     peek_inbox_cmd
+
+let ack_inbox : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "ack-inbox"
+       ~doc:"Acknowledge selected message IDs from your bound inbox, preserving unrelated mail.")
+    ack_inbox_cmd
 
 (** B183: discoverable synonym for agents that try `c2c inbox`. Non-draining
     peek (same as peek-inbox) so a casual `inbox` check never silently drops

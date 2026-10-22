@@ -24,6 +24,7 @@ let command_tier_map () : (string * safety) list =
   ; "find", Tier1
   ; "whoami", Tier1
   ; "poll-inbox", Tier1
+  ; "ack-inbox", Tier1
   ; "peek-inbox", Tier1
   ; "inbox", Tier1 (* B183 alias for peek-inbox *)
   ; "wait-inbox", Tier1
