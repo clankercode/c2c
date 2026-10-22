@@ -20,14 +20,14 @@ def sources(directory: Path) -> dict[str, bytes]:
     return {p.relative_to(directory).as_posix(): p.read_bytes()
             for p in directory.rglob('*')
             if p.is_file() and '__pycache__' not in p.parts
-            and p.suffix in ('.py', '.yaml', '.md')}
+            and p.suffix not in ('.pyc', '.pyo')}
 
 
 def check(root: Path, installed: Path | None = None) -> list[str]:
     canonical = sources(root / 'data/hermes-plugin')
     if not canonical or 'skills/c2c/SKILL.md' not in canonical:
         return ['canonical Hermes plugin/skill missing']
-    text = (root / 'ocaml/cli/c2c_hermes_plugin_embedded.ml').read_text(encoding='utf-8')
+    text = (root / 'ocaml/cli/c2c_hermes_plugin_embedded.ml').read_bytes().decode('utf-8')
     entries = ENTRY.findall(text)
     embedded = {name: body.encode('utf-8') for name, _, body in entries}
     errors = []

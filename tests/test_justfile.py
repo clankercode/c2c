@@ -31,6 +31,9 @@ class JustfileTests(unittest.TestCase):
         self.assertEqual(gate.returncode, 0, gate.stderr)
         self.assertIn('tools/ci/check-hermes-distribution.py', combined_output(gate))
         self.assertNotIn('codegen-hermes-plugin', combined_output(gate))
+        ci = (REPO / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+        self.assertLess(ci.index('just check-hermes-distribution'),
+                        ci.index('run: just build'))
 
     def test_test_py_exposes_deprecated_compatibility_modules(self):
         result = just_dry_run("test-py")
