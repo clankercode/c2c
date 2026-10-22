@@ -373,3 +373,4 @@ bugs:
     - file: B374-hermes-late-arrival-drain-lose.todo
     - file: B375-hermes-watcher-and-pre-llm-dra.todo
     - file: B376-recommend-mcp-tool-installatio.todo
+    - file: B377-host-mailbox-rejects-hermes-ow.todo
