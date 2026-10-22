@@ -139,11 +139,18 @@ let test_lifecycle () = with_root (fun root ->
     (List.length (List.filter (fun r -> r.session_id = sid other) (B.load_registrations (B.create ~root)))))
 
 let test_reserved_client_namespaces () = with_root (fun root ->
-  let hermes = bind ~thread_id:"hermes-thread" ~alias:"hermes-telegram-inbound"
+  List.iter (fun client_type ->
+    let b = bind ~thread_id:(client_type ^ "-thread")
+        ~alias:(client_type ^ "-owned") ~client_type root in
+    Alcotest.(check string) (client_type ^ " namespace")
+      (client_type ^ "-owned") (alias b))
+    [ "claude"; "codex"; "opencode"; "kimi"; "crush"; "grok"; "agy";
+      "hermes"; "cursor"; "muse" ];
+  let hermes = bind ~thread_id:"hermes-telegram-thread" ~alias:"hermes-telegram-inbound"
       ~client_type:"hermes" root in
   Alcotest.(check string) "explicit namespace permits own reserved prefix"
     "hermes-telegram-inbound" (alias hermes);
-  let codex = bind ~thread_id:"codex-thread" ~alias:"codex-background"
+  let codex = bind ~thread_id:"codex-background-thread" ~alias:"codex-background"
       ~client_type:"codex" root in
   Alcotest.(check string) "other supported namespace permits own prefix"
     "codex-background" (alias codex);
