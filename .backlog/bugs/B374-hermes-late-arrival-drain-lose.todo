@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-10-22T12:04:57Z"
 claimed_by: codex-trial-truss-jppl
-completed_at: null
+completed_at: "2026-10-22T13:44:23Z"
 complexity: high
 created_at: "2026-10-22T11:16:38Z"
 depends_on: []
+duration_minutes: 99.44464427610001
 estimate_hours: 4
 id: B374
 priority: high
 started_at: "2026-10-22T12:04:57Z"
-status: in_progress
+status: done
 tags: []
 title: Hermes late-arrival drain loses undelivered mail when second injection fails
-updated_at: "2026-10-22T12:04:57Z"
+updated_at: "2026-10-22T13:44:23Z"
 ---
 Initial peeked message inject succeeds; second message arrives between peek and poll. Poll drains both; second injection declines. Inbox empty, delivered count1, late message not marked/delivered; warning log is only fallback. Source delivery.py _inject_drained / drain_and_inject. Require selective ack or durable retry for drained extras, restart-safe retry, safe logging (not sole storage), and failure/arrival interleaving tests. Preserve initial peek-inject-drain refusal semantics.
 

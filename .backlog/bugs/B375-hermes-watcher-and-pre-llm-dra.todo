@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-10-22T12:04:57Z"
 claimed_by: codex-trial-truss-jppl
-completed_at: null
+completed_at: "2026-10-22T13:44:23Z"
 complexity: high
 created_at: "2026-10-22T11:16:38Z"
 depends_on: []
+duration_minutes: 99.4447492608
 estimate_hours: 4
 id: B375
 priority: medium
 started_at: "2026-10-22T12:04:57Z"
-status: in_progress
+status: done
 tags: []
 title: Hermes watcher and pre-LLM drain race duplicates transcript delivery
-updated_at: "2026-10-22T12:04:57Z"
+updated_at: "2026-10-22T13:44:23Z"
 ---
 Pause watcher after novelty filter; execute pre_llm drain; resume watcher injection. Same message delivered through both paths and polled twice. Two concurrent watcher-style calls also inject twice. Dedup lock only protects individual set operations, not delivery ownership. Require atomic in-flight reservation/serialization with rollback on refusal, no locks across unsafe blocking callbacks, and deterministic race tests proving one accepted delivery plus retry after failure.
 
