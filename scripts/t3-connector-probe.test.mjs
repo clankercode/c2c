@@ -86,7 +86,13 @@ test('runtime validation checks PID incarnation and listener ownership', async (
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'c2c-probe-runtime-'));
   t.after(() => fs.rmSync(directory, { recursive: true }));
   fs.mkdirSync(path.join(directory, 'userdata'), { mode: 0o700 });
-  const origin = await fixture(t, (_request, response) => response.end());
+  const ipv4Server = http.createServer((_request, response) => response.end());
+  await new Promise((resolve) => ipv4Server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => {
+    ipv4Server.closeAllConnections();
+    ipv4Server.close(resolve);
+  }));
+  const origin = `http://127.0.0.1:${ipv4Server.address().port}`;
   const runtime = { pid: process.pid, origin, port: Number(new URL(origin).port), startedAt: new Date().toISOString() };
   const filename = path.join(directory, 'userdata/server-runtime.json');
   fs.writeFileSync(filename, JSON.stringify(runtime), { mode: 0o600 });
@@ -99,6 +105,10 @@ test('runtime validation checks PID incarnation and listener ownership', async (
   assert.throws(() => runtimeState(directory), /listening socket/);
   fs.writeFileSync(filename, JSON.stringify({ ...runtime, origin: `http://[::1]:${runtime.port}` }));
   assert.throws(() => runtimeState(directory), /listening socket/, 'IPv4 does not attest an IPv6 endpoint');
+  // Separate IPv4/IPv6 ephemeral allocators may choose the same numeric port.
+  // Close our IPv4 listener before asserting that only IPv6 attests the next
+  // endpoint; otherwise that existing listener can make the negative valid.
+  await new Promise((resolve) => ipv4Server.close(resolve));
   const ipv6Server = http.createServer((_request, response) => response.end());
   await new Promise((resolve, reject) => {
     ipv6Server.once('error', reject);
