@@ -1,0 +1,13 @@
+---
+complexity: low
+created_at: "2026-10-22T11:56:18Z"
+depends_on: []
+estimate_hours: 1
+id: B376
+priority: medium
+status: pending
+tags: []
+title: Recommend MCP tool installation in Hermes c2c onboarding
+updated_at: "2026-10-22T11:56:18Z"
+---
+Hermes onboarding currently defaults to plugin/skill/CLI and leaves MCP opt-in. Improve installer guidance and docs to explicitly recommend installing the c2c MCP server for structured agent tool calls, explaining --with-mcp and the distinction between MCP tools and inbound wake delivery. Preserve explicit consent and existing configurations; do not silently change opt-in defaults. Acceptance: Hermes onboarding clearly recommends MCP, documents install and real tool-discovery verification, handles already-configured installations without duplicate entries, and verifies session/broker identity rather than borrowing another conversation alias. Add regression coverage for installer recommendation output. Requested by Max during Hermes Telegram dogfooding; concurrent P9 work must remain untouched.
