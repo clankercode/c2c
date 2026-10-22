@@ -598,7 +598,7 @@ let test_with_mcp_on_fallback_path_merges_both () =
 
 (* --- B357: posture flip + written-config verdicts -------------------------- *)
 
-let test_posture_flip_muse_in_upgrade_check_list () =
+let test_posture_flip_muse_and_hermes_in_upgrade_check_list () =
   (* B357 flip: `install all --with-mcp` converges a hooks-only muse
      install to MCP (B352 P3/D4 proven live). *)
   let clients = C2c_setup.mcp_upgrade_check_clients in
@@ -609,12 +609,14 @@ let test_posture_flip_muse_in_upgrade_check_list () =
     [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode" ];
   check bool "muse joins the upgrade-check list (B357)" true
     (List.mem "muse" clients);
-  (* MCP-less clients stay out: the flip is posture for MCP writers only. *)
+  check bool "hermes joins the upgrade-check list (B376)" true
+    (List.mem "hermes" clients);
+  (* CLI-only clients stay out: the flip is posture for MCP writers only. *)
   List.iter
     (fun c ->
        check bool (Printf.sprintf "%s stays out of the upgrade-check list" c) false
          (List.mem c clients))
-    [ "grok"; "agy"; "hermes"; "crush" ]
+    [ "grok"; "agy"; "crush" ]
 
 let assoc_str fields k =
   match List.assoc_opt k fields with Some (`String s) -> Some s | _ -> None
@@ -941,8 +943,8 @@ let () =
             test_with_mcp_on_fallback_path_merges_both
         ] )
     ; ( "b357_posture_verdicts"
-      , [ test_case "muse in upgrade-check list" `Quick
-            test_posture_flip_muse_in_upgrade_check_list
+      , [ test_case "muse and hermes in upgrade-check list" `Quick
+            test_posture_flip_muse_and_hermes_in_upgrade_check_list
         ; test_case "written config pins client, no static sid" `Quick
             test_with_mcp_written_config_pins_client_no_static_sid
         ; test_case "install footer enums pinned" `Quick
