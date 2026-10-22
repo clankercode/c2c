@@ -778,12 +778,25 @@ module Bound_http (B : BACKEND) = struct
               (List.length (B.dead_letter relay));
             signed [ pk; alias; host ] >>= fun accepted ->
             check int "bound contact HTTP 200" 200 (RTSR.status_code accepted);
-            (match B.peek_inbox relay ~node_id:rn ~session_id:rs with
+            let delivery_id =
+              match B.peek_inbox relay ~node_id:rn ~session_id:rs with
              | [ `Assoc fields ] ->
                check bool "inbox retains registered sender host" true
                  (List.assoc_opt "from_alias" fields
-                  = Some (`String "zzbound-s@fedcba654321"))
-             | _ -> fail "expected one bound HTTP inbox row");
+                  = Some (`String "zzbound-s@fedcba654321"));
+               (match List.assoc_opt "message_id" fields with
+                | Some (`String id) ->
+                  check int "HTTP inbox ID is prefix + SHA256 hex" 75 (String.length id);
+                  check bool "HTTP inbox ID is opaque lowercase hex" true
+                    (Str.string_match (Str.regexp "^contact-v1-[0-9a-f]+$") id 0);
+                  check bool "HTTP inbox ID differs from client ID" true
+                    (id <> "m-bound-http");
+                  check bool "HTTP inbox ID differs from grant ID" true
+                    (id <> issued.grant_id);
+                  id
+                | _ -> fail "expected HTTP inbox delivery ID")
+             | _ -> fail "expected one bound HTTP inbox row"
+            in
             (match queue () with
              | [ msg ] -> check string "shortqueue retains registered sender host"
                  "zzbound-s@fedcba654321" msg.Relay_short_queue.from_alias
@@ -808,8 +821,11 @@ module Bound_http (B : BACKEND) = struct
               (match duplicate.json with
                | Some (`Assoc fields) -> List.assoc_opt "duplicate" fields = Some (`Bool true)
                | _ -> false);
-            check int "bound retry leaves exactly one inbox row" 1
-              (List.length (B.peek_inbox relay ~node_id:rn ~session_id:rs));
+            (match B.peek_inbox relay ~node_id:rn ~session_id:rs with
+             | [ `Assoc fields ] ->
+               check bool "bound HTTP retry preserves opaque delivery ID" true
+                 (List.assoc_opt "message_id" fields = Some (`String delivery_id))
+             | _ -> fail "bound retry must leave exactly one inbox row");
             check int "bound retry leaves exactly one queue row" 1 (List.length (queue ()));
             check int "bound retry leaves exactly one WS push" 1
               (Relay_ws_server.push_dm_invocations ());

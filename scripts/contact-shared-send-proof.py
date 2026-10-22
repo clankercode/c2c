@@ -94,6 +94,31 @@ def mode_proof(binary, mcp_binary, source_commit, tls):
         f.expect_message(f.poll(), "MCP shared grant delivery")
         f.check("mcp_tool_inherits_shared_selection")
 
+        # Independent grants may reuse a client ID. Exercise the receiving
+        # connector itself, including a fresh process reading its durable
+        # dedupe ledger, rather than checking only relay admission counts.
+        outsider_path, _ = f.issue(sender="outsider")
+        f.import_grant(outsider_path, who="outsider", flags=flags)
+        mark = f.observer.mark()
+        f.accepted(f.direct("independent-id", "same ID from alice"))
+        f.accepted(f.direct("independent-id", "same ID from outsider", who="outsider"))
+        sync(f, "bob")
+        inbox_path = f.root / "bob" / "broker" / (f.sid("bob") + ".inbox.json")
+        rows = parse_json(inbox_path.read_text(), "native_receiver_inbox")
+        f.expect_message(rows, "same ID from alice")
+        f.expect_message(rows, "same ID from outsider", sender="outsider")
+        delivered_ids = [row.get("message_id") for row in rows]
+        require(len(delivered_ids) == 2
+                and all(isinstance(value, str) and value for value in delivered_ids)
+                and len(set(delivered_ids)) == 2,
+                "grant_namespaced_inbox_ids")
+        f.accepted(f.direct("independent-id", "same ID from alice"), duplicate=True)
+        sync(f, "bob")
+        require(parse_json(inbox_path.read_text(), "native_receiver_restart_inbox") == rows,
+                "receiver_restart_duplicate_not_reappended")
+        f.assert_network(mark, count=3)
+        f.check("inbound_connector_preserves_independent_sender_ids")
+
         # Lose a response only after native relay admission. Restart only the
         # owned native relay, then the next CLI connector process must replay
         # the original ID and grant, with exactly one relay inbox effect.

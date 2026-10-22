@@ -694,13 +694,14 @@ let filter_inbound_messages_persisted ?expected_recipient ~now ~broker_root poli
    at-least-once: a batch appended locally but NOT cleared on the relay
    (failed poll pass, or a kill between append and clear) is served again
    by the next peek. The ledger makes that redelivery idempotent — rows
-   whose message_id was already persisted are skipped instead of
-   re-appended. Relay message ids are unique per row (the relay dedups
-   /send by id), so a bounded FIFO is sufficient. Rows without an id and
+   whose scoped message ID was already persisted are skipped instead of
+   re-appended. IDs are independent across relays, recipients and senders;
+   contact inbox IDs additionally identify the issuing grant namespace.
+   A bounded FIFO is sufficient. Rows without an id and
    policy-rejected rows are deliberately never ledgered: the former cannot
    be keyed, the latter must retry when a transient rejection clears. *)
 let inbound_seen_ids_path broker_root =
-  broker_root // "relay-inbound-seen-ids.json"
+  broker_root // "relay-inbound-seen-ids-v2.json"
 
 let inbound_seen_ids_cap = 4096
 
@@ -708,6 +709,19 @@ let row_message_id row =
   match Yojson.Safe.Util.member "message_id" row with
   | `String s -> Some s
   | _ -> None
+
+let inbound_row_key ~relay_url ~session_id row =
+  match row_message_id row with
+  | None -> None
+  | Some id ->
+      let field key = match Yojson.Safe.Util.member key row with
+        | `String value -> value | _ -> "" in
+      let relay = match Relay_contact_store.canonical_url relay_url with
+        | Ok canonical -> canonical | Error _ -> relay_url in
+      let namespace = Yojson.Safe.to_string (`List (List.map (fun s -> `String s)
+          ["c2c-inbound/2"; relay; session_id; field "from_alias";
+           field "to_alias"; id])) in
+      Some Digestif.SHA256.(to_hex (digest_string namespace))
 
 let load_inbound_seen_ids broker_root =
   match C2c_io.read_json_opt (inbound_seen_ids_path broker_root) with
@@ -728,10 +742,10 @@ let save_inbound_seen_ids broker_root seen =
    | Ok () -> ()
    | Error _ -> ())
 
-let drop_already_seen_rows seen rows =
+let drop_already_seen_rows ~relay_url ~session_id seen rows =
   List.filter
     (fun row ->
-       match row_message_id row with
+       match inbound_row_key ~relay_url ~session_id row with
        | Some id -> not (List.mem id seen)
        | None -> true)
     rows
@@ -2763,17 +2777,12 @@ let json_list_member ~key json =
    whole-row structural equality. *)
 let dedupe_inbound_rows ~seen rows =
   let seen_ids =
-    List.filter_map
-      (fun row ->
-         match Yojson.Safe.Util.member "message_id" row with
-         | `String s -> Some s
-         | _ -> None)
-      seen
+    List.filter_map (inbound_row_key ~relay_url:"" ~session_id:"") seen
   in
   List.filter
     (fun row ->
-       match Yojson.Safe.Util.member "message_id" row with
-       | `String s -> not (List.mem s seen_ids)
+       match inbound_row_key ~relay_url:"" ~session_id:"" row with
+       | Some s -> not (List.mem s seen_ids)
        | _ -> not (List.mem row seen))
     rows
 
@@ -3559,7 +3568,8 @@ let sync (t : t) : sync_result Lwt.t =
               (* B317 review fix: skip rows already persisted by a previous
                  pass whose poll never cleared them, so a peek-ok/poll-
                  failing relay cannot grow the inbox every pass. *)
-              let fresh = drop_already_seen_rows !inbound_seen_ids msgs in
+              let fresh = drop_already_seen_rows ~relay_url:t.relay_url ~session_id
+                  !inbound_seen_ids msgs in
               if fresh = [] then delivered, rejected, notes, errs
               else begin
               let deliverable, rejection_reasons, rate_state_error =
@@ -3607,7 +3617,7 @@ let sync (t : t) : sync_result Lwt.t =
                      ledgered-and-lost. *)
                   List.iter
                     (fun row ->
-                       match row_message_id row with
+                       match inbound_row_key ~relay_url:t.relay_url ~session_id row with
                        | Some id -> inbound_seen_ids := id :: !inbound_seen_ids
                        | None -> ())
                     deliverable;

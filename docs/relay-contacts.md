@@ -72,6 +72,13 @@ changes and disabled routes hold pending mail; they never cause a fallback to
 legacy `/send`. A relay lacking destination-binding support requires an upgrade.
 Unprotected legacy routes retain their existing relay behavior.
 
+Contact request IDs identify retries within one grant. Delivered inbox messages
+use opaque IDs derived from that grant and request ID, so independent contacts
+can reuse a request ID without suppressing one another. The receiving connector
+also scopes its dedupe ledger by relay, local session and sender/recipient route.
+Its new ledger preserves the old file; an unresolved pre-upgrade relay handoff
+can be replayed because an old bare-ID record cannot identify its destination.
+
 Replies need a separate recipient-issued grant in the reverse direction. The
 relay derives the sender's `alias@host_id` return route from its identity-bound
 lease. A forward grant does not authorize a reply. For T3, the DATA footer

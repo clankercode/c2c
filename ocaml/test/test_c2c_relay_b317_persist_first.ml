@@ -37,7 +37,7 @@ let rec mkdir_p path =
   if path = "" || path = "/" || Sys.file_exists path then ()
   else (mkdir_p (Filename.dirname path); Unix.mkdir path 0o700)
 
-let write_eligible_registry broker =
+let write_eligible_registry ?(registrations = ["fixture-live", "fixture-alias"]) broker =
   mkdir_p broker;
   let pid = Unix.getpid () in
   let start =
@@ -47,10 +47,10 @@ let write_eligible_registry broker =
   in
   let oc = open_out (Filename.concat broker "registry.json") in
   Yojson.Safe.to_channel oc
-    (`List [ `Assoc [ "session_id", `String "fixture-live";
-                      "alias", `String "fixture-alias";
+    (`List (List.map (fun (sid, alias) -> `Assoc [ "session_id", `String sid;
+                      "alias", `String alias;
                       "pid", `Int pid;
-                      "pid_start_time", `Int start ] ]);
+                      "pid_start_time", `Int start ]) registrations));
   close_out oc
 
 let waitpid_until ~timeout_s pid =
@@ -334,6 +334,65 @@ let test_failed_peek_falls_back_to_poll () =
            (try Unix.kill pid Sys.sigkill with _ -> ());
            Alcotest.fail "failed-peek child died")
 
+let test_independent_sender_recipient_ids () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let make_row sender recipient = Yojson.Safe.to_string (`Assoc [
+      "message_id", `String "incident-42"; "from_alias", `String sender;
+      "to_alias", `String recipient; "content", `String "independent payload";
+      "ts", `Float 1. ]) in
+  let first = [make_row "alice@remote" "fixture-alias";
+               make_row "bob@remote" "fixture-alias"] in
+  let second = [make_row "alice@remote" "fixture-alias-two"] in
+  let response rows = RTS.response (messages_json rows) in
+  match Unix.fork () with
+  | 0 ->
+      let code = try
+        RTS.with_server ~routes:[
+          RTS.route ~meth:"POST" ~path:"/heartbeat" [RTS.response reg_ok];
+          RTS.route ~meth:"POST" ~path:"/peek_inbox"
+            (List.map response [first; second; first; second]);
+          RTS.route ~meth:"POST" ~path:"/poll_inbox"
+            (List.map response [first; second; first; second]) ] (fun srv ->
+          let registrations = ["fixture-live", "fixture-alias";
+                               "fixture-two", "fixture-alias-two"] in
+          write_eligible_registry ~registrations tmp;
+          let run () =
+            let t = Conn.make_state ~relay_url:(RTS.url srv) ~token:None
+                ~identity:None ~broker_root:tmp ~node_id:"b317-test"
+                ~heartbeat_ttl:60. ~interval:1. ~verbose:false in
+            t.Conn.registered <- List.map fst registrations;
+            Lwt_main.run (Conn.sync t) in
+          let a = run () in
+          let b = run () in
+          if a.Conn.inbound_delivered <> 3 || b.Conn.inbound_delivered <> 0
+          then failwith "independent deliveries or restart dedupe failed";
+          0)
+      with _ -> 51 in
+      Unix._exit code
+  | pid ->
+      (match waitpid_until ~timeout_s:30. pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | _ ->
+           (try Unix.kill pid Sys.sigkill with _ -> ());
+           Alcotest.fail "independent namespace sync failed");
+      Alcotest.(check (list string)) "both independent senders persisted once"
+        ["incident-42"; "incident-42"] (read_inbox_ids tmp "fixture-live");
+      Alcotest.(check (list string)) "second recipient persisted once"
+        ["incident-42"] (read_inbox_ids tmp "fixture-two")
+
+let test_scoped_seen_keys () =
+  let row = Yojson.Safe.from_string (relay_row ~mid:"same-id" ~content:"same payload") in
+  let key relay sid = Option.get (Conn.inbound_row_key ~relay_url:relay ~session_id:sid row) in
+  let seen = [key "https://relay.example" "one"] in
+  Alcotest.(check int) "canonical same destination dedupes" 0
+    (List.length (Conn.drop_already_seen_rows ~relay_url:"https://relay.example/"
+       ~session_id:"one" seen [row]));
+  List.iter (fun (relay, sid) ->
+    Alcotest.(check int) "independent relay or session stays deliverable" 1
+      (List.length (Conn.drop_already_seen_rows ~relay_url:relay ~session_id:sid seen [row])))
+    ["https://other.example", "one"; "https://relay.example", "two"]
+
 let () =
   let open Alcotest in
   run "c2c-relay-b317-persist-first"
@@ -345,4 +404,8 @@ let () =
          test_case "failed poll pass redelivers without duplicates" `Quick
            test_failed_poll_pass_redelivers_without_duplicates;
          test_case "failed peek falls back to the destructive poll" `Quick
-           test_failed_peek_falls_back_to_poll ]) ]
+           test_failed_peek_falls_back_to_poll;
+         test_case "independent senders and recipients may reuse IDs" `Quick
+           test_independent_sender_recipient_ids;
+         test_case "seen keys include canonical relay and session" `Quick
+           test_scoped_seen_keys ]) ]

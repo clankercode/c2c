@@ -34,6 +34,16 @@ let contact_fp_of_pk pk = contact_sha256_raw pk
 
 let contact_grant_id_of_verifier verifier = contact_b64url verifier
 
+(* Inbox consumers deduplicate across grants. Keep their ID separate from the
+   sender's retry key: domain || fixed 32-byte verifier || decimal byte length
+   || ':' || client ID. The inbox ID exposes only the digest, not the verifier. *)
+let contact_delivery_id ~verifier ~message_id =
+  let framed =
+    "c2c-contact-inbox-delivery-v1\000" ^ verifier
+    ^ string_of_int (String.length message_id) ^ ":" ^ message_id
+  in
+  "contact-v1-" ^ Digestif.SHA256.(to_hex (digest_string framed))
+
 let contact_sender_fp_prefix sender_fp =
   let full = contact_b64url sender_fp in
   if String.length full <= 12 then full else String.sub full 0 12
@@ -2034,7 +2044,8 @@ module InMemoryRelay : RELAY = struct
                       let msg =
                         `Assoc
                           [
-                            ("message_id", `String message_id);
+                            ("message_id", `String
+                               (contact_delivery_id ~verifier ~message_id));
                             ("from_alias", `String from_alias);
                             ("to_alias", `String g.delivery_alias);
                             ("content", `String content);
@@ -4972,7 +4983,9 @@ end = struct
                            (fun ins ->
                              Sqlite3.bind_text ins 1 node_id |> ignore;
                              Sqlite3.bind_text ins 2 session_id |> ignore;
-                             Sqlite3.bind_text ins 3 message_id |> ignore;
+                             Sqlite3.bind_text ins 3
+                               (contact_delivery_id ~verifier ~message_id)
+                             |> ignore;
                              Sqlite3.bind_text ins 4 from_alias
                              |> ignore;
                              Sqlite3.bind_text ins 5 g.delivery_alias |> ignore;

@@ -60,6 +60,30 @@ let contains_literal ~needle haystack =
     true
   with Not_found -> false
 
+let inbox_string name json =
+  match json with
+  | `Assoc fields ->
+    (match List.assoc_opt name fields with
+     | Some (`String value) -> value
+     | _ -> Alcotest.failf "inbox field %s must be a string" name)
+  | _ -> Alcotest.fail "expected an inbox JSON object"
+
+let check_delivery_id ~grant_secret ~message_id delivery_id =
+  Alcotest.(check int) "delivery ID is prefix + SHA256 hex" 75
+    (String.length delivery_id);
+  Alcotest.(check bool) "delivery ID is opaque lowercase hex" true
+    (Str.string_match (Str.regexp "^contact-v1-[0-9a-f]+$") delivery_id 0);
+  let verifier = sha256_raw grant_secret in
+  List.iter (fun (label, value) ->
+    Alcotest.(check bool) ("delivery ID does not expose " ^ label) false
+      (contains_literal ~needle:value delivery_id))
+    [ "client ID", message_id;
+      "raw secret", grant_secret;
+      "encoded secret", b64url grant_secret;
+      "raw verifier", verifier;
+      "grant ID", b64url verifier;
+      "hex verifier", Digestif.SHA256.(to_hex (digest_string grant_secret)) ]
+
 let sqlite_count_where db_path sql bind =
   let db = Sqlite3.db_open db_path in
   Fun.protect ~finally:(fun () -> ignore (Sqlite3.db_close db)) (fun () ->
@@ -433,6 +457,82 @@ module Make_tests (B : BACKEND) = struct
 
   (* ---- replay / idempotency -------------------------------------------- *)
 
+  let test_delivery_ids_scoped_to_grants () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let recipient_a_pk = gen_pk () and recipient_b_pk = gen_pk () in
+      let sender_a_pk = gen_pk () and sender_b_pk = gen_pk () in
+      let an, ar = register_peer t ~alias:"zzid-ra" ~pk:recipient_a_pk in
+      let bn, br = register_peer t ~alias:"zzid-rb" ~pk:recipient_b_pk in
+      ignore (register_peer t ~alias:"zzid-sa" ~pk:sender_a_pk);
+      ignore (register_peer t ~alias:"zzid-sb" ~pk:sender_b_pk);
+      let now = Unix.gettimeofday () in
+      let issue ~recipient_pk ~delivery_alias ~sender_pk =
+        issue_ok t ~recipient_pk ~delivery_alias ~sender_pk
+          ~expires_at:(now +. 3600.) ~now ()
+      in
+      let grant_a = issue ~recipient_pk:recipient_a_pk
+          ~delivery_alias:"zzid-ra" ~sender_pk:sender_a_pk in
+      let grant_other_recipient = issue ~recipient_pk:recipient_b_pk
+          ~delivery_alias:"zzid-rb" ~sender_pk:sender_a_pk in
+      let grant_other_sender = issue ~recipient_pk:recipient_a_pk
+          ~delivery_alias:"zzid-ra" ~sender_pk:sender_b_pk in
+      let grant_sibling = issue ~recipient_pk:recipient_a_pk
+          ~delivery_alias:"zzid-ra" ~sender_pk:sender_a_pk in
+      let message_id = "same-chosen-client-id:42" in
+      let cases =
+        [ grant_a, "zzid-sa", sender_a_pk, "zzid-ra", "original";
+          grant_other_recipient, "zzid-sa", sender_a_pk, "zzid-rb", "other-recipient";
+          grant_other_sender, "zzid-sb", sender_b_pk, "zzid-ra", "other-sender";
+          grant_sibling, "zzid-sa", sender_a_pk, "zzid-ra", "sibling-grant" ]
+      in
+      List.iter (fun (grant, sender_alias, sender_pk, recipient_alias, content) ->
+        let admit ~content ~now =
+          B.admit_contact_delivery t ~verified_sender_alias:sender_alias
+            ~verified_sender_identity_pk:sender_pk
+            ~grant_secret:grant.grant_secret ~message_id ~content ~now ()
+        in
+        (match admit ~content ~now with
+         | `Accepted (ts, alias) ->
+           Alcotest.(check (float 1e-6)) "original acceptance timestamp" now ts;
+           Alcotest.(check string) "original acceptance recipient" recipient_alias alias
+         | _ -> Alcotest.fail "independent grant must accept the chosen client ID");
+        (match admit ~content:"retry-must-not-replace" ~now:(now +. 0.1) with
+         | `Duplicate (ts, alias) ->
+           Alcotest.(check (float 1e-6)) "retry retains acceptance timestamp" now ts;
+           Alcotest.(check string) "retry retains recipient" recipient_alias alias
+         | _ -> Alcotest.fail "retry under the same grant must be duplicate")) cases;
+      let inbox_a = B.poll_inbox t ~node_id:an ~session_id:ar in
+      let inbox_b = B.poll_inbox t ~node_id:bn ~session_id:br in
+      Alcotest.(check int) "three independent grants reach recipient A" 3
+        (List.length inbox_a);
+      Alcotest.(check int) "one grant reaches recipient B" 1 (List.length inbox_b);
+      let ids = List.map (fun (grant, _, _, recipient_alias, content) ->
+        let inbox = if recipient_alias = "zzid-ra" then inbox_a else inbox_b in
+        let row = List.find (fun row -> inbox_string "content" row = content) inbox in
+        let id = inbox_string "message_id" row in
+        check_delivery_id ~grant_secret:grant.grant_secret ~message_id id;
+        id) cases
+      in
+      Alcotest.(check int)
+        "recipients, independent senders, and sibling grants have distinct IDs" 4
+        (List.length (List.sort_uniq String.compare ids));
+      let next_message_id = message_id ^ ":next" in
+      (match B.admit_contact_delivery t ~verified_sender_alias:"zzid-sa"
+          ~verified_sender_identity_pk:sender_a_pk
+          ~grant_secret:grant_a.grant_secret ~message_id:next_message_id
+          ~content:"new-client-id" ~now () with
+       | `Accepted _ -> ()
+       | _ -> Alcotest.fail "same grant must accept a different client ID");
+      match B.poll_inbox t ~node_id:an ~session_id:ar with
+      | [ row ] ->
+        let id = inbox_string "message_id" row in
+        check_delivery_id ~grant_secret:grant_a.grant_secret
+          ~message_id:next_message_id id;
+        Alcotest.(check bool) "a different client ID gets a different delivery ID" false
+          (List.mem id ids)
+      | _ -> Alcotest.fail "new client ID must yield exactly one delivery")
+
   let test_duplicate_message_id_at_most_one_delivery () =
     let t, cleanup = B.fresh () in
     Fun.protect ~finally:cleanup (fun () ->
@@ -454,6 +554,9 @@ module Make_tests (B : BACKEND) = struct
        with
        | `Accepted _ -> ()
        | _ -> Alcotest.fail "first must Accept");
+      let before = B.peek_inbox t ~node_id:rn ~session_id:rs in
+      let delivery_id = inbox_string "message_id" (List.hd before) in
+      check_delivery_id ~grant_secret:issued.grant_secret ~message_id:mid delivery_id;
       (match
          B.admit_contact_delivery t ~verified_sender_alias:"zzfrom-dup"
            ~verified_sender_identity_pk:sender_pk
@@ -463,8 +566,13 @@ module Make_tests (B : BACKEND) = struct
        | `Duplicate _ -> ()
        | `Accepted _ -> Alcotest.fail "second must Duplicate, not Accept"
        | `Rejected -> Alcotest.fail "second must Duplicate, not Reject");
-      Alcotest.(check int) "exactly one inbox row" 1
-        (List.length (B.poll_inbox t ~node_id:rn ~session_id:rs)))
+      let inbox = B.poll_inbox t ~node_id:rn ~session_id:rs in
+      Alcotest.(check int) "exactly one inbox row" 1 (List.length inbox);
+      let row = List.hd inbox in
+      Alcotest.(check string) "retry retains delivery ID" delivery_id
+        (inbox_string "message_id" row);
+      Alcotest.(check string) "retry retains original content" "once"
+        (inbox_string "content" row))
 
   (* ---- restart persistence (SQLite-meaningful; InMemory with persist_dir) *)
 
@@ -475,9 +583,9 @@ module Make_tests (B : BACKEND) = struct
       Fun.protect ~finally:(fun () -> rm_rf dir) (fun () ->
         let recipient_pk = gen_pk () in
         let sender_pk = gen_pk () in
-        let issued, mid =
+        let issued, mid, delivery_id =
           let t1 = B.create ~persist_dir:dir () in
-          let _ = register_peer t1 ~alias:"zzto-rs" ~pk:recipient_pk in
+          let rn, rs = register_peer t1 ~alias:"zzto-rs" ~pk:recipient_pk in
           let _ = register_peer t1 ~alias:"zzfrom-rs" ~pk:sender_pk in
           let now = Unix.gettimeofday () in
           let issued =
@@ -493,12 +601,20 @@ module Make_tests (B : BACKEND) = struct
            with
            | `Accepted _ -> ()
            | _ -> Alcotest.fail "pre-restart admit must Accept");
-          (issued, mid)
+          let inbox = B.peek_inbox t1 ~node_id:rn ~session_id:rs in
+          Alcotest.(check int) "one queued message before restart" 1 (List.length inbox);
+          let delivery_id = inbox_string "message_id" (List.hd inbox) in
+          check_delivery_id ~grant_secret:issued.grant_secret ~message_id:mid delivery_id;
+          (issued, mid, delivery_id)
         in
         (* New process-like open of the same DB. *)
         let t2 = B.create ~persist_dir:dir () in
-        let _ = register_peer t2 ~alias:"zzto-rs" ~pk:recipient_pk in
+        let rn, rs = register_peer t2 ~alias:"zzto-rs" ~pk:recipient_pk in
         let _ = register_peer t2 ~alias:"zzfrom-rs" ~pk:sender_pk in
+        let inbox = B.peek_inbox t2 ~node_id:rn ~session_id:rs in
+        Alcotest.(check int) "one queued message survives restart" 1 (List.length inbox);
+        Alcotest.(check string) "restart retains delivery ID" delivery_id
+          (inbox_string "message_id" (List.hd inbox));
         let now = Unix.gettimeofday () in
         (match
            B.admit_contact_delivery t2 ~verified_sender_alias:"zzfrom-rs"
@@ -509,7 +625,15 @@ module Make_tests (B : BACKEND) = struct
          | `Duplicate _ -> ()
          | `Accepted _ -> Alcotest.fail "post-restart same message_id must Duplicate"
          | `Rejected ->
-           Alcotest.fail "post-restart grant must still exist (not Reject)"))
+           Alcotest.fail "post-restart grant must still exist (not Reject)");
+        let inbox = B.poll_inbox t2 ~node_id:rn ~session_id:rs in
+        Alcotest.(check int) "post-restart retry leaves exactly one delivery" 1
+          (List.length inbox);
+        let row = List.hd inbox in
+        Alcotest.(check string) "post-restart retry retains delivery ID" delivery_id
+          (inbox_string "message_id" row);
+        Alcotest.(check string) "post-restart retry retains original content" "persist-me"
+          (inbox_string "content" row))
     | _ ->
       (* In-memory process restart is not durable by design; skip-as-pass only
          if list is empty after a fresh create — assert the API exists. *)
@@ -917,6 +1041,8 @@ module Make_tests (B : BACKEND) = struct
        `Quick, test_rotate_old_secret_rejected_new_accepted);
       ("rotate one grant preserves sibling grant",
        `Quick, test_rotate_one_grant_does_not_revoke_sibling);
+      ("delivery IDs separate recipients, senders, and sibling grants",
+       `Quick, test_delivery_ids_scoped_to_grants);
       ("duplicate message_id at most one delivery",
        `Quick, test_duplicate_message_id_at_most_one_delivery);
       ("restart preserves grant + message_id (sqlite)",
