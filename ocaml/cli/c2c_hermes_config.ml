@@ -156,6 +156,17 @@ let bail fmt = Printf.ksprintf (fun m -> raise (Bail m)) fmt
 let utf8_bom = "\xef\xbb\xbf"
 
 let split_doc (content : string) : doc =
+  (* YAML also recognizes bare CR and Unicode line separators. Our physical
+     lines only model LF/CRLF; accepting another separator can hide a mapping
+     and make an append replace existing integrations in the effective YAML. *)
+  let n = String.length content in
+  String.iteri (fun i c ->
+    if c = '\r' && (i + 1 = n || content.[i + 1] <> '\n') then
+      bail "bare CR line separator; refusing to edit this config";
+    if (c = '\194' && i + 1 < n && content.[i + 1] = '\133')
+       || (c = '\226' && i + 2 < n && content.[i + 1] = '\128'
+           && (content.[i + 2] = '\168' || content.[i + 2] = '\169')) then
+      bail "Unicode line separator; refusing to edit this config") content;
   (* Hold the BOM aside rather than stripping it: any editor that wrote one is
      likely to want it back, and leaving it in place would make the very first
      key read as `\xef\xbb\xbfplugins` — unrecognised, and therefore appended
@@ -375,11 +386,11 @@ type located = {
   ci : int; (* direct-child column of the plugins mapping *)
 }
 
-let locate_plugins (content : string) : located option =
+let locate_mapping ~key (content : string) : located option =
   let d = split_doc content in
   match
     find_key_total d.lines ~start:0 ~stop:(Array.length d.lines) ~col:0
-      ~key:"plugins"
+      ~key
   with
   | None ->
       (* No `plugins:` key that a line-oriented scan can see. Before concluding
@@ -449,6 +460,8 @@ let locate_plugins (content : string) : located option =
         | None -> 2 (* empty mapping — PyYAML's two-space child indent *)
       in
       Some { d; plugins_idx; plugins_stop; ci }
+
+let locate_plugins content = locate_mapping ~key:"plugins" content
 
 let enabled_items_of (l : located) : string list =
   match find_child_key l.d.lines (l.plugins_idx + 1) l.plugins_stop l.ci "enabled" with
@@ -633,3 +646,209 @@ let disable (content : string) : (string, string) result =
   with
   | Bail msg -> Error msg
   | Invalid_argument msg -> Error ("malformed config: " ^ msg)
+
+(* Hermes MCP connections may be shared across conversations. The native
+   --hermes-connection startup mode owns this identity; NEVER persist the
+   installing agent's identity, environment, cwd or inferred broker here. *)
+let mcp_marker = "# c2c-managed:hermes-mcp-v1 "
+
+let mcp_entry_lines ~indent ~server_path ~broker_root =
+  let quote s = Yojson.Safe.to_string (`String s) in
+  let args = [ "--hermes-connection" ]
+    @ (match broker_root with None -> [] | Some root -> [ "--broker-root"; root ]) in
+  let payload =
+    [ spaces indent ^ "c2c:"
+    ; spaces (indent + 2) ^ "command: " ^ quote server_path
+    ; spaces (indent + 2) ^ "args: [" ^ String.concat ", " (List.map quote args) ^ "]" ]
+  in
+  let digest = Digest.to_hex (Digest.string (String.concat "\n" payload)) in
+  match payload with
+  | key :: fields -> key :: (spaces (indent + 2) ^ mcp_marker ^ digest) :: fields
+  | [] -> assert false
+
+(* MCP edits are deliberately stricter than plugin-list edits: duplicate,
+   merged and multi-document mappings are ambiguous ownership, so refuse. *)
+let require_plain_mapping_key line =
+  let body = body_of line in
+  let plain_char = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '.' -> true
+    | _ -> false in
+  match String.index_opt body ':' with
+  | Some i when i > 0 && String.for_all plain_char (String.trim (String.sub body 0 i)) -> ()
+  | _ -> bail "unsupported YAML mapping key syntax; refusing MCP edit"
+
+(* A physical-line editor cannot safely treat a mapping-looking line inside
+   a multiline quoted scalar as YAML structure. Refuse that scalar form before
+   locating keys. Escapes and doubled single quotes stay within their line. *)
+let require_single_line_scalars line =
+  let n = String.length line in
+  let boundary i = i = 0 || List.mem line.[i - 1] [' '; '\t'; ':'; '['; '{'; ','; '-'; '?'] in
+  let finish quote flow =
+    if quote <> None || flow <> [] then
+      bail "multiline quoted scalars and flow collections are not supported for MCP edits" in
+  let rec scan i quote flow =
+    if i >= n then finish quote flow
+    else match quote, line.[i] with
+      | Some '"', '\\' -> scan (i + 2) quote flow
+      | Some '\'', '\'' when i + 1 < n && line.[i + 1] = '\'' -> scan (i + 2) quote flow
+      | Some q, c when q = c -> scan (i + 1) None flow
+      | Some _, _ -> scan (i + 1) quote flow
+      | None, '#' when i = 0 || List.mem line.[i - 1] [' '; '\t'] -> finish None flow
+      | None, ('"' | '\'' as q) when boundary i -> scan (i + 1) (Some q) flow
+      | None, ('[' | '{' as opener) -> scan (i + 1) None (opener :: flow)
+      | None, (']' | '}' as closer) ->
+          (match flow with
+           | opener :: rest when (opener = '[' && closer = ']') || (opener = '{' && closer = '}') ->
+               scan (i + 1) None rest
+           | _ -> bail "unbalanced flow collection; refusing MCP edit")
+      | None, _ -> scan (i + 1) None flow
+  in
+  scan 0 None []
+
+let locate_mcp content =
+  let d = split_doc content in
+  Array.iter require_single_line_scalars d.lines;
+  let seen = Hashtbl.create 4 in
+  Array.iter (fun line ->
+    let body = body_of line in
+    if not (is_skippable line) then begin
+      if loose_key body "<<" then bail "YAML merge keys are not supported for MCP edits";
+      if strip_trailing_comment body = "..." then bail "closed YAML document is not supported for MCP edits";
+      if strip_trailing_comment body = "---" then begin
+        if Hashtbl.mem seen "document" then bail "multiple YAML documents are not supported";
+        Hashtbl.add seen "document" ()
+      end else if body.[0] <> '%' then begin
+        Hashtbl.replace seen "document" ();
+        if not (Hashtbl.mem seen "root") then begin
+          if indent_width line <> 0 then bail "indented document root; refusing MCP edit";
+          Hashtbl.add seen "root" ()
+        end;
+        if indent_width line = 0 then require_plain_mapping_key line
+      end;
+      if indent_width line = 0 && loose_key body "mcp_servers" then begin
+        if Hashtbl.mem seen "mcp" then bail "duplicate mcp_servers keys; refusing to edit";
+        Hashtbl.add seen "mcp" ()
+      end
+    end) d.lines;
+  (* Empty flow maps are Hermes/PyYAML's common fresh/default shape. Only
+     the empty map is safely convertible without a full YAML parser. *)
+  let d =
+    match find_key_total d.lines ~start:0 ~stop:(Array.length d.lines) ~col:0 ~key:"mcp_servers" with
+    | Some (ki, rest) when strip_trailing_comment rest = "{}" ->
+        let lines = Array.copy d.lines in
+        let trimmed = String.trim rest in
+        let trailing = String.trim (String.sub trimmed 2 (String.length trimmed - 2)) in
+        lines.(ki) <- "mcp_servers:" ^ (if trailing = "" then "" else " " ^ trailing);
+        { d with lines }
+    | _ -> d
+  in
+  let located = locate_mapping ~key:"mcp_servers" (join_doc d) in
+  (match located with
+   | Some l ->
+       let count = ref 0 in
+       for i = l.plugins_idx + 1 to l.plugins_stop - 1 do
+         if not (is_skippable d.lines.(i)) && indent_width d.lines.(i) = l.ci then
+           require_plain_mapping_key d.lines.(i);
+         if indent_width d.lines.(i) = l.ci && loose_key (body_of d.lines.(i)) "c2c"
+         then incr count
+       done;
+       if !count > 1 then bail "duplicate mcp_servers.c2c keys; refusing to edit"
+   | None -> ());
+  (* The opt-in installer also edits plugins.enabled. A quoted/escaped child
+       key must not hide that existing list from the plugin merge. PyYAML's
+       indentless sequence items are values, not sibling mapping keys. *)
+  (match locate_plugins content with
+     | None -> ()
+     | Some l ->
+         for i = l.plugins_idx + 1 to l.plugins_stop - 1 do
+           let line = l.d.lines.(i) in
+           if not (is_skippable line) && indent_width line = l.ci
+              && seq_item (body_of line) = None then
+             require_plain_mapping_key line
+         done);
+  (d, located)
+
+let validate_mcp_document content =
+  try ignore (locate_mcp content); Ok ()
+  with Bail msg | Invalid_argument msg -> Error msg
+
+let mcp_entry l =
+  find_child_key l.d.lines (l.plugins_idx + 1) l.plugins_stop l.ci "c2c"
+
+(* The checksum is an ownership/drift receipt, not an authentication token.
+   Any edit to a managed stanza causes uninstall to leave it alone. *)
+let managed_mcp_span l ki =
+  let lines = l.d.lines in
+  if ki + 3 >= Array.length lines then None
+  else
+    let marker = spaces (l.ci + 2) ^ mcp_marker in
+    let line = lines.(ki + 1) in
+    if not (String.starts_with ~prefix:marker line) then None
+    else
+      let payload = [ lines.(ki); lines.(ki + 2); lines.(ki + 3) ] in
+      let digest = Digest.to_hex (Digest.string (String.concat "\n" payload)) in
+      let stop = block_end lines ki l.ci in
+      (* Trailing comments belong to the operator; retain them. Extra
+         structural fields (env/cwd/tools/enabled/etc.) invalidate ownership. *)
+      let extra = ref false in
+      for i = ki + 4 to stop - 1 do
+        if not (is_skippable lines.(i)) then extra := true
+      done;
+      if line = marker ^ digest && not !extra then Some (ki, ki + 4) else None
+
+let mcp_managed content =
+  try
+    match snd (locate_mcp content) with
+    | None -> false
+    | Some l -> (match mcp_entry l with
+        | None -> false
+        | Some (ki, _) -> Option.is_some (managed_mcp_span l ki))
+  with Bail _ | Invalid_argument _ -> false
+
+let mcp_configured content =
+  try
+    match snd (locate_mcp content) with
+    | None -> false
+    | Some l -> Option.is_some (mcp_entry l)
+  with Bail _ | Invalid_argument _ -> false
+
+(* Return whether the entry is managed by us. Existing foreign entries are
+   preserved byte-for-byte, even with --force; no integration is overwritten. *)
+let enable_mcp ~server_path ~broker_root content =
+  try
+    let d, located = locate_mcp content in
+    match located with
+    | Some l ->
+        (match mcp_entry l with
+         | Some (ki, _) -> Ok (content, Option.is_some (managed_mcp_span l ki))
+         | None ->
+             let lines = insert_at d.lines (l.plugins_idx + 1)
+               (mcp_entry_lines ~indent:l.ci ~server_path ~broker_root) in
+             Ok (join_doc { d with lines }, true))
+    | None ->
+        let existing = match Array.to_list d.lines with [ "" ] -> [] | xs -> xs in
+        let lines = Array.of_list (existing @ [ "mcp_servers:" ]
+          @ mcp_entry_lines ~indent:2 ~server_path ~broker_root) in
+        Ok (join_doc { d with lines; trailing_newline = true }, true)
+  with Bail msg | Invalid_argument msg -> Error msg
+
+let disable_mcp content =
+  try
+    match snd (locate_mcp content) with
+    | None -> Ok content
+    | Some l ->
+        (match mcp_entry l with
+         | None -> Ok content
+         | Some (ki, _) ->
+             match managed_mcp_span l ki with
+             | None -> Ok content
+             | Some (start, stop) ->
+                 let lines = drop_indices l.d.lines (List.init (stop - start) ((+) start)) in
+                 (* Keep an explicit empty mapping rather than YAML null. *)
+                 let ending = block_end lines l.plugins_idx 0 in
+                 if first_structural lines (l.plugins_idx + 1) ending = None then begin
+                   let rest = Option.get (key_rest lines.(l.plugins_idx) "mcp_servers") |> String.trim in
+                   lines.(l.plugins_idx) <- "mcp_servers: {}" ^ (if rest = "" then "" else " " ^ rest)
+                 end;
+                 Ok (join_doc { l.d with lines }))
+  with Bail msg | Invalid_argument msg -> Error msg

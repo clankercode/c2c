@@ -49,9 +49,12 @@ let with_temp_home f =
   let dir = base // Printf.sprintf "c2c-setup-hermes-%08x" (Random.bits ()) in
   Unix.mkdir dir 0o700;
   let prev_home = Sys.getenv_opt "HOME" in
+  let prev_hermes = Sys.getenv_opt "HERMES_HOME" in
+  Unix.putenv "HERMES_HOME" "";
   Unix.putenv "HOME" dir;
   Fun.protect
     ~finally:(fun () ->
+      Unix.putenv "HERMES_HOME" (Option.value prev_hermes ~default:"");
       (match prev_home with Some h -> Unix.putenv "HOME" h | None -> ());
       try remove_tree dir with _ -> ())
     (fun () -> f dir)
@@ -604,7 +607,7 @@ let test_enable_disable_round_trip () =
 (* ---------------------------------------------------------------------- *)
 
 let run_setup ~alias =
-  C2c_setup.setup_hermes ~output_mode:C2c_types.Json ~dry_run:false
+  C2c_setup.setup_hermes ~with_mcp:false ~server_path:"" ~broker_root_opt:None ~output_mode:C2c_types.Json ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val:alias ~alias_from_auto_gen:false
 
 let config_path home = home // ".hermes" // "config.yaml"
@@ -664,7 +667,7 @@ let test_install_dry_run_writes_nothing () =
     Unix.mkdir (home // ".hermes") 0o700;
     write_file (config_path home) real_shape;
     ignore
-      (C2c_setup.setup_hermes ~output_mode:C2c_types.Json ~dry_run:true
+      (C2c_setup.setup_hermes ~with_mcp:false ~server_path:"" ~broker_root_opt:None ~output_mode:C2c_types.Json ~dry_run:true
          ~root:"/fake/broker/root" ~alias_val:"hermes-fixture-ad"
          ~alias_from_auto_gen:false);
     check string "config untouched by --dry-run" real_shape
@@ -683,9 +686,197 @@ let test_install_refuses_tab_indented_config_without_corrupting_it () =
     check bool "plugin files still written" true
       (Sys.file_exists (plugin_dir home // "plugin.yaml")))
 
+(* B376 opt-in MCP, ownership and foreign identity regressions. *)
+let mcp_enable ?(root=None) input =
+  ok_exn (C2c_hermes_config.enable_mcp ~server_path:"/opt/c2c-mcp-server"
+    ~broker_root:root input)
+
+let test_mcp_surgical_round_trip () =
+  let input = "model: private\nplugins:\n  enabled: [c2c]\nmcp_servers:\n  foreign:\n    command: keep\n# operator tail\n" in
+  let out, managed = mcp_enable input in
+  check bool "new stanza is owned" true managed;
+  check bool "MCP detected" true (C2c_hermes_config.mcp_configured out);
+  check bool "foreign command preserved" true (contains_line out "command: keep");
+  check string "idempotent" out (fst (mcp_enable out));
+  check string "surgical uninstall round-trip" input
+    (ok_exn (C2c_hermes_config.disable_mcp out));
+  let changed = Str.global_replace (Str.regexp_string "--hermes-connection") "--operator-choice" out in
+  check string "modified managed entry retained" changed
+    (ok_exn (C2c_hermes_config.disable_mcp changed))
+
+let test_mcp_foreign_preserved () =
+  let input = "mcp_servers:\n  c2c:\n    command: foreign\n    env:\n      CUSTOM: keep\n  other:\n    command: keep\n" in
+  let out, managed = mcp_enable input in
+  check string "no foreign override" input out;
+  check bool "foreign entry not claimed" false managed;
+  check string "foreign entry not uninstalled" input
+    (ok_exn (C2c_hermes_config.disable_mcp input))
+
+let test_mcp_shape_safety () =
+  List.iter (fun input ->
+    match C2c_hermes_config.enable_mcp ~server_path:"server" ~broker_root:None input with
+    | Error _ -> ()
+    | Ok _ -> failf "unsafe YAML accepted: %S" input)
+    [ "\"mcp_\\u0073ervers\":\n  foreign:\n    command: keep\n"
+    ; "plugins:\n  \"en\\u0061bled\": [keep]\n"
+    ; "plugins:\n  !!str enabled: [keep]\n"
+    ; "plugins:\n  ? enabled\n  : [keep]\n"
+    ; "!!str mcp_servers:\n  foreign: {}\n"
+    ; "? mcp_servers\n: {}\n"
+    ; "mcp_servers:\n  \"c2\\u0063\": {}\n"
+    ; "mcp_servers:\n  !!str c2c: {}\n"
+    ; "mcp_servers:\n  ? c2c\n  : {}\n"
+    ; "\"mcp_servers\": {}\n"; "mcp_servers : {}\n"
+    ; "mcp_servers:\n  \"c2c\": {}\n"
+    ; "mcp_servers:\n  c2c: {}\n  c2c: {}\n"
+    ; "mcp_servers: {}\nmcp_servers: {}\n"
+    ; "mcp_servers:\n- other\n"; "mcp_servers: [other]\n"
+    ; "mcp_servers: &shared\n  other: {}\n"; "<<: *defaults\n"
+    ; "---\nmodel: x\n---\nmcp_servers: {}\n"
+    ; "model: x\n...\n"; "{model: x}\n"
+    ; "description: [\nmcp_servers:\n  other: keep\n]\n"
+    ; "description: {\nmcp_servers: keep\n}\n"
+    ; "  model: keep\n"
+    ; "mcp_servers:\n\tc2c: {}\n" ];
+  let out, _ = mcp_enable "mcp_servers: {} # keep\n" in
+  check bool "empty flow map accepts insert" true (C2c_hermes_config.mcp_configured out);
+  check bool "flow map comment retained" true (contains_line out "mcp_servers: # keep");
+  check string "uninstall retains mapping comment" "mcp_servers: {} # keep\n"
+    (ok_exn (C2c_hermes_config.disable_mcp out))
+
+let test_mcp_bom_crlf_no_newline () =
+  let input = "\xef\xbb\xbfmcp_servers:\r\n  other:\r\n    command: keep" in
+  let out, _ = mcp_enable input in
+  check string "BOM/CRLF/no trailing newline round-trip" input
+    (ok_exn (C2c_hermes_config.disable_mcp out));
+  let explicit, _ = mcp_enable ~root:(Some "/intentional/broker") "" in
+  check bool "explicit root is argument" true
+    (contains_line explicit "args: [\"--hermes-connection\", \"--broker-root\", \"/intentional/broker\"]")
+
+let with_env vars f =
+  let prev = List.map (fun (k, _) -> (k, Sys.getenv_opt k)) vars in
+  List.iter (fun (k, v) -> Unix.putenv k v) vars;
+  Fun.protect ~finally:(fun () -> List.iter (fun (k, v) ->
+    Unix.putenv k (Option.value v ~default:"")) prev) f
+
+let test_mcp_installer_opt_in_and_identity () =
+  with_temp_home (fun home ->
+    with_env [ "C2C_MCP_SESSION_ID", "foreign-codex-session"
+             ; "C2C_MCP_AUTO_REGISTER_ALIAS", "foreign-codex-alias"
+             ; "C2C_MCP_BROKER_ROOT", "/foreign/codex/broker" ] (fun () ->
+      let default = run_setup ~alias:"installer-hint" in
+      check bool "default leaves MCP absent" false
+        (C2c_hermes_config.mcp_configured (read_file (config_path home)));
+      check bool "recommendation returned" true
+        (List.mem_assoc "mcp_recommendation" default.C2c_setup.extra_json);
+      let run () = C2c_setup.setup_hermes ~with_mcp:true
+        ~server_path:"/opt/c2c-mcp-server" ~broker_root_opt:None
+        ~output_mode:C2c_types.Json ~dry_run:false ~root:"/installer/root"
+        ~alias_val:"installer-hint" ~alias_from_auto_gen:false in
+      let result = run () in
+      let out = read_file (config_path home) in
+      check bool "opt-in detected by upgrade path" true (C2c_setup.client_mcp_configured "hermes");
+      check bool "Hermes in upgrade set" true (List.mem "hermes" C2c_setup.mcp_upgrade_check_clients);
+      check bool "connection startup mode" true (contains_line out "args: [\"--hermes-connection\"]");
+      List.iter (fun forbidden -> check bool ("no captured " ^ forbidden) false
+        (try ignore (Str.search_forward (Str.regexp_string forbidden) out 0); true with Not_found -> false))
+        [ "foreign-codex"; "/foreign/codex"; "/installer/root"; "installer-hint"; "env:"; "cwd:" ];
+      check bool "MCP ownership recorded" true
+        (List.exists (fun (a : C2c_install_manifest.artifact) -> a.key = Some "mcp_servers.c2c") result.artifacts);
+      ignore (run ());
+      check string "second install identical" out (read_file (config_path home));
+      check int "private config mode" 0o600 ((Unix.stat (config_path home)).Unix.st_perm)))
+
+let test_mcp_dry_run_and_active_home () =
+  with_temp_home (fun home ->
+    let active = home // "active-hermes" in
+    with_env ["HERMES_HOME", active] (fun () ->
+      let run dry_run = C2c_setup.setup_hermes ~with_mcp:true
+        ~server_path:"/opt/c2c-mcp-server" ~broker_root_opt:None
+        ~output_mode:C2c_types.Json ~dry_run ~root:"unused"
+        ~alias_val:"unused" ~alias_from_auto_gen:false in
+      ignore (run true);
+      check bool "dry-run writes nothing" false (Sys.file_exists active);
+      ignore (run false);
+      check bool "active config written" true (Sys.file_exists (active // "config.yaml"));
+      check bool "default profile untouched" false (Sys.file_exists (config_path home));
+      check bool "active config detected" true (C2c_setup.client_mcp_configured "hermes")))
+
+let test_mcp_multiline_scalar_refused () =
+  List.iter (fun quote ->
+    let input = "description: " ^ quote ^ "\nplugins:\n  enabled: [keep]\nmcp_servers:\n  other:\n    command: keep\n    " ^ quote ^ "\n" in
+    check bool "scalar content is not MCP config" false (C2c_hermes_config.mcp_configured input);
+    (match C2c_hermes_config.disable_mcp input with
+     | Error _ -> () | Ok _ -> fail "multiline scalar uninstall must refuse");
+    List.iter (fun with_mcp -> with_temp_home (fun home ->
+      Unix.mkdir (home // ".hermes") 0o700;
+      write_file (config_path home) input;
+      let result = C2c_setup.setup_hermes ~with_mcp ~server_path:"server" ~broker_root_opt:None
+        ~output_mode:C2c_types.Json ~dry_run:false ~root:"unused" ~alias_val:"hint" ~alias_from_auto_gen:false in
+      check string "both config edits refused before plugin merge" input (read_file (config_path home));
+      check bool "refusal reported" true (List.mem_assoc "warning" result.extra_json))) [false; true])
+    ["\""; "'"]
+
+let test_mcp_line_separators_refused () =
+  List.iter (fun separator ->
+    let input = String.concat separator
+      ["model: keep"; "mcp_servers:"; "  foreign:"; "    command: keep"] ^ "\n" in
+    check bool "hidden MCP mapping not accepted" false (C2c_hermes_config.mcp_configured input);
+    (match C2c_hermes_config.disable_mcp input with
+     | Error _ -> () | Ok _ -> fail "unsupported line separators must refuse uninstall");
+    with_temp_home (fun home ->
+      Unix.mkdir (home // ".hermes") 0o700;
+      write_file (config_path home) input;
+      let result = C2c_setup.setup_hermes ~with_mcp:true ~server_path:"server" ~broker_root_opt:None
+        ~output_mode:C2c_types.Json ~dry_run:false ~root:"unused" ~alias_val:"hint" ~alias_from_auto_gen:false in
+      check string "line separator refusal preserves bytes" input (read_file (config_path home));
+      check bool "line separator refusal reported" true (List.mem_assoc "warning" result.extra_json)))
+    ["\r"; "\194\133"; "\226\128\168"; "\226\128\169"]
+
+let test_mcp_foreign_identity_report () =
+  with_temp_home (fun home ->
+    Unix.mkdir (home // ".hermes") 0o700;
+    write_file (config_path home) "mcp_servers:\n  c2c:\n    command: foreign\n";
+    List.iter (fun with_mcp ->
+      let result = C2c_setup.setup_hermes ~with_mcp ~server_path:"server" ~broker_root_opt:None
+        ~output_mode:C2c_types.Json ~dry_run:false ~root:"unused" ~alias_val:"hint" ~alias_from_auto_gen:false in
+      check bool "foreign identity explicitly unverified" true
+        (List.assoc "mcp_identity" result.extra_json = `String "unverified; existing foreign MCP configuration preserved");
+      check bool "foreign warning in either mode" true (List.mem_assoc "warning" result.extra_json))
+      [false; true])
+
+let test_mcp_human_recommendation () =
+  with_temp_home (fun home ->
+    let path = home // "stdout" in
+    let oc = open_out path in
+    flush stdout;
+    let saved = Unix.dup Unix.stdout in
+    Fun.protect ~finally:(fun () -> flush stdout; Unix.dup2 saved Unix.stdout; Unix.close saved; close_out oc)
+      (fun () ->
+        Unix.dup2 (Unix.descr_of_out_channel oc) Unix.stdout;
+        ignore (C2c_setup.setup_hermes ~with_mcp:false ~server_path:""
+          ~broker_root_opt:None ~output_mode:C2c_types.Human ~dry_run:false
+          ~root:"unused" ~alias_val:"hint" ~alias_from_auto_gen:false));
+    let out = read_file path in
+    List.iter (fun expected -> check bool expected true
+      (try ignore (Str.search_forward (Str.regexp_string expected) out 0); true with Not_found -> false))
+      [ "Recommended: c2c install hermes --with-mcp"; "explicit opt-in"
+      ; "separate connection-owned identity"; "do not enable inbound wake or grant injection consent" ])
+
 let () =
   run "c2c_setup_hermes"
-    [ ( "config.yaml merge"
+    [ ( "B376 MCP opt-in",
+        [ test_case "surgical merge and managed uninstall" `Quick test_mcp_surgical_round_trip
+        ; test_case "foreign config preserved" `Quick test_mcp_foreign_preserved
+        ; test_case "ambiguous YAML refused" `Quick test_mcp_shape_safety
+        ; test_case "BOM CRLF and intentional root" `Quick test_mcp_bom_crlf_no_newline
+        ; test_case "installer opt-in and foreign identity" `Quick test_mcp_installer_opt_in_and_identity
+        ; test_case "dry run and active home" `Quick test_mcp_dry_run_and_active_home
+        ; test_case "multiline quoted scalar refused" `Quick test_mcp_multiline_scalar_refused
+        ; test_case "unsupported line separators refused" `Quick test_mcp_line_separators_refused
+        ; test_case "foreign identity unverified" `Quick test_mcp_foreign_identity_report
+        ; test_case "human recommendation" `Quick test_mcp_human_recommendation ])
+    ; ( "config.yaml merge"
       , [ test_case "PyYAML block style (real config shape)" `Quick
             test_pyyaml_block_style
         ; test_case "new item shares the existing item column" `Quick

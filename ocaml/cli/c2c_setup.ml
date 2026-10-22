@@ -3154,8 +3154,15 @@ let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mc
    The config.yaml merge lives in [C2c_hermes_config] — it is the only edit c2c
    makes to a large shared operator file, so it is a separately tested pure
    function rather than inline string surgery. *)
-let hermes_plugins_dir home = home // ".hermes" // "plugins" // "c2c"
-let hermes_config_path home = home // ".hermes" // "config.yaml"
+let hermes_home home =
+  match Sys.getenv_opt "HERMES_HOME" with
+  | Some path when String.trim path <> "" && not (Filename.is_relative path) -> path
+  | Some path when String.trim path <> "" ->
+      invalid_arg "HERMES_HOME must be an absolute path"
+  | _ -> home // ".hermes"
+
+let hermes_plugins_dir home = hermes_home home // "plugins" // "c2c"
+let hermes_config_path home = hermes_home home // "config.yaml"
 
 (* The outcome of the config.yaml merge. [Config_failed] is a REAL outcome, not
    an internal detail: the plugin files land either way, so an operator whose
@@ -3202,7 +3209,34 @@ let merge_hermes_config ~dry_run ~config_path =
         | Error e -> Config_failed (Printf.sprintf "write failed: %s" e)
       end
 
-let setup_hermes ~output_mode ~dry_run ~root:_ ~alias_val ~alias_from_auto_gen =
+let hermes_mcp_recommendation =
+  "Recommended: c2c install hermes --with-mcp for structured MCP tools (explicit opt-in)."
+
+let merge_hermes_mcp ~dry_run ~config_path ~server_path ~broker_root_opt =
+  let broker_root_opt = Option.map (fun root ->
+    if Filename.is_relative root then Sys.getcwd () // root else root) broker_root_opt in
+  let existing = if Sys.file_exists config_path then C2c_io.read_file config_path else "" in
+  match C2c_hermes_config.enable_mcp ~server_path ~broker_root:broker_root_opt existing with
+  | Error msg -> (false, [], Some ("MCP config not updated: " ^ msg))
+  | Ok (updated, managed) ->
+      let written =
+        if updated = existing || dry_run then Ok ()
+        else begin
+          mkdir_p false (Filename.dirname config_path);
+          let perm = try (Unix.stat config_path).Unix.st_perm with _ -> 0o600 in
+          C2c_io.write_file_atomic ~perm config_path updated
+        end
+      in
+      (match written with
+       | Error msg -> (false, [], Some ("MCP config write failed: " ^ msg))
+       | Ok () ->
+           (true,
+            (if managed then [ C2c_install_manifest.shared_key ~path:config_path
+                ~key:"mcp_servers.c2c" ~format:"yaml" ] else []),
+            (if managed then None else Some
+               "Existing mcp_servers.c2c preserved; verify its tools and connection identity with hermes mcp test c2c and whoami.")))
+
+let setup_hermes ~with_mcp ~server_path ~broker_root_opt ~output_mode ~dry_run ~root:_ ~alias_val ~alias_from_auto_gen =
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
   let plugins_dir = hermes_plugins_dir home in
   let skills_dir = plugins_dir // "skills" // "c2c" in
@@ -3226,18 +3260,49 @@ let setup_hermes ~output_mode ~dry_run ~root:_ ~alias_val ~alias_from_auto_gen =
     @ List.map C2c_install_manifest.owned_file
         [ skills_dir; plugins_dir // "skills"; plugins_dir ]
   in
-  let config_outcome = merge_hermes_config ~dry_run ~config_path in
+  let config_outcome =
+    let validation =
+      if Sys.file_exists config_path then
+        C2c_hermes_config.validate_mcp_document (C2c_io.read_file config_path)
+      else Ok ()
+    in
+    match validation with
+    | Error msg -> Config_failed msg
+    | Ok () -> merge_hermes_config ~dry_run ~config_path
+  in
   let artifacts =
     match config_outcome with
     | Config_enabled a -> artifacts @ [ a ]
     | Config_failed _ -> artifacts
   in
+  let mcp_configured, mcp_artifacts, mcp_warning =
+    if with_mcp then merge_hermes_mcp ~dry_run ~config_path ~server_path ~broker_root_opt
+    else
+      let content = if Sys.file_exists config_path then C2c_io.read_file config_path else "" in
+      let owned = C2c_hermes_config.mcp_managed content in
+      (C2c_hermes_config.mcp_configured content,
+       (if owned then [ C2c_install_manifest.shared_key ~path:config_path
+           ~key:"mcp_servers.c2c" ~format:"yaml" ] else []),
+       (if C2c_hermes_config.mcp_configured content && not owned then
+          Some "Existing mcp_servers.c2c preserved; its connection identity behavior is unverified."
+        else None))
+  in
+  let mcp_identity =
+    if mcp_configured && mcp_warning = None then
+      "separate connection-owned identity; may be shared across conversations"
+    else if mcp_configured then "unverified; existing foreign MCP configuration preserved"
+    else "not configured"
+  in
+  let artifacts = artifacts @ mcp_artifacts in
   let skill_path = skills_dir // "SKILL.md" in
   let extra =
     [ ("plugin_path", `String plugins_dir)
     ; ("skill_path", `String skill_path)
     ; ("config_path", `String config_path)
-    ; ("mcp", `Bool false)
+    ; ("mcp", `Bool mcp_configured)
+      ; ("mcp_requested", `Bool with_mcp)
+      ; ("mcp_recommendation", `String hermes_mcp_recommendation)
+      ; ("mcp_identity", `String mcp_identity)
     ; ("receive", `String "plugin")
     ; ("alias", `String alias_val)
     ; ("alias_from_auto_gen", `Bool alias_from_auto_gen)
@@ -3249,16 +3314,23 @@ let setup_hermes ~output_mode ~dry_run ~root:_ ~alias_val ~alias_from_auto_gen =
        otherwise-successful result with a caveat. `ok` stays true: the plugin
        files really were installed. *)
     @ (match config_outcome with
-       | Config_enabled _ -> []
+       | Config_enabled _ -> (match mcp_warning with None -> [] | Some msg -> [("warning", `String msg)])
        | Config_failed msg ->
            [ ("warning",
               `String (Printf.sprintf
                          "%s not updated: %s — add `c2c` to plugins.enabled by hand"
-                         config_path msg)) ])
+                         config_path (msg ^ (match mcp_warning with None -> "" | Some m -> "; " ^ m)))) ])
   in
   (match output_mode with
    | Human ->
-       Printf.printf "Installed c2c for Hermes (plugin + skill + auto-delivery; no MCP).\n";
+       Printf.printf "Installed c2c for Hermes (plugin + skill; MCP %s).\n"
+           (if mcp_configured then "configured" else "not configured");
+         Printf.printf "  %s\n" hermes_mcp_recommendation;
+         if mcp_configured then Printf.printf "  MCP identity: %s.\n" mcp_identity
+         else Printf.printf "  The opt-in installs a separate connection-owned identity, potentially shared across conversations.\n";
+         Printf.printf "  MCP tools do not enable inbound wake or grant injection consent.\n";
+         if mcp_configured then Printf.printf "  Verify actual tool discovery: hermes mcp test c2c; then call whoami and confirm broker root.\n";
+         (match mcp_warning with None -> () | Some msg -> Printf.eprintf "[c2c WARNING] %s\n%!" msg);
        Printf.printf "  plugin: %s\n" plugins_dir;
        Printf.printf "  skill: %s\n" skill_path;
        (match config_outcome with
@@ -3308,8 +3380,10 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
      likewise multi-session CLI-first, so the same clobber applies at install
      time, where alias_val may be auto-picked and unregistered. Muse instead
      gets the file from its SessionStart hook once a hook-registered/managed
-     alias is unambiguous (T3, [C2c_cli_helpers.write_default_alias_if_unambiguous]). *)
-  if (not dry_run) && not (List.mem client [ "grok"; "muse" ]) then
+     alias is unambiguous (T3, [C2c_cli_helpers.write_default_alias_if_unambiguous]).
+     Hermes identities belong to runtime conversations/MCP connections, so its
+     install-time hint must not become another client's default either. *)
+  if (not dry_run) && not (List.mem client [ "grok"; "muse"; "hermes" ]) then
     (try
        let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
        C2c_mcp.mkdir_p config_dir;
@@ -3322,7 +3396,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
      setup until the deprecated cleanup route is removed. *)
   let (server_path, mcp_command) =
     match client with
-    | ("claude" | "codex" | "kimi" | "opencode" | "muse") when not with_mcp -> ("", "")
+    | ("claude" | "codex" | "kimi" | "opencode" | "muse" | "hermes") when not with_mcp -> ("", "")
     | _ -> resolve_mcp_server_paths ~output_mode
   in
   let result =
@@ -3335,7 +3409,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
     | "grok" -> setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | "muse" -> setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen
     | "agy" -> setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
-    | "hermes" -> setup_hermes ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
+    | "hermes" -> setup_hermes ~with_mcp ~server_path ~broker_root_opt ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | _ ->
         let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
         (match output_mode with
@@ -3349,6 +3423,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
      ensure_default_wake_schedule). *)
   let target_dir =
     match client with
+    | "hermes" -> hermes_home (Sys.getenv "HOME")
     | "opencode" ->
         (match target_dir_opt with
          | Some d -> if Filename.is_relative d then Sys.getcwd () // d else d
@@ -3470,10 +3545,8 @@ let client_mcp_configured client =
                 | _ -> false)
            | _ -> false
          with _ -> false)
-  (* Hermes never gets an MCP config: `c2c install hermes` ships an in-process
-     Python plugin instead. Explicit so a future `install all --with-mcp` reads
-     as "nothing to do", not "detection not implemented yet". *)
-  | "hermes" -> false
+  | "hermes" ->
+      (try C2c_hermes_config.mcp_configured (C2c_io.read_file (hermes_config_path home)) with _ -> false)
   | "muse" -> json_file_has_c2c_mcp_entry (muse_settings_path ())
   | _ -> false
 
@@ -3489,7 +3562,7 @@ let client_mcp_configured client =
    were ever chosen for a client here, gate the passthrough too, not just
    the check line. *)
 let mcp_upgrade_check_clients =
-  [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "muse" ]
+  [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "muse"; "hermes" ]
 
 let file_contains path needle =
   if not (Sys.file_exists path) then false

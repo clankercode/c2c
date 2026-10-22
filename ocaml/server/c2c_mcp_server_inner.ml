@@ -238,6 +238,45 @@ let emit_notifications ~broker_root ?(inter_message_delay = 0.0) ~session_id mes
   in
   loop messages
 
+let hermes_connection_mode () =
+  Sys.getenv_opt "C2C_HERMES_CONNECTION_READY" = Some (string_of_int (Unix.getpid ()))
+
+(* A shared Hermes server must not adopt Codex's per-request thread metadata.
+   This is transport-specific; all other MCP clients keep existing routing. *)
+let connection_request request =
+  if not (hermes_connection_mode ()) then request
+  else
+    match request with
+    | `Assoc fields ->
+        let clean_params = function
+          | `Assoc params -> `Assoc (List.map (fun (key, value) ->
+              if key <> "_meta" then (key, value)
+              else (key, match value with
+                | `Assoc meta -> `Assoc (List.filter (fun (k, _) -> k <> "x-codex-turn-metadata") meta)
+                | other -> other)) params)
+          | other -> other
+        in
+        `Assoc (List.map (fun (key, value) ->
+          (key, if key = "params" then clean_params value else value)) fields)
+    | other -> other
+
+let handle_connection_request ~broker_root request =
+  let request = connection_request request in
+  let arguments = match assoc_opt "params" request with
+    | Some params -> Option.value (assoc_opt "arguments" params) ~default:`Null
+    | None -> `Null in
+  let foreign_session = match assoc_opt "session_id" arguments with
+    | Some (`String sid) when sid <> "" -> Some sid <> session_id ()
+    | Some `Null | None | Some (`String "") -> false
+    | _ -> true in
+  if hermes_connection_mode () && foreign_session then
+    let id = Option.value (assoc_opt "id" request) ~default:`Null in
+    Lwt.return_some (`Assoc ["jsonrpc", `String "2.0"; "id", id;
+      "result", `Assoc ["isError", `Bool true; "content", `List [`Assoc
+        ["type", `String "text"; "text", `String
+          "Hermes MCP connection owns its session; foreign session_id overrides are refused."]]]])
+  else C2c_mcp.handle_request ~broker_root request
+
 let rec loop ~broker_root ~negotiated_capabilities_ref =
   let open Lwt.Syntax in
   let* msg = read_message () in
@@ -251,6 +290,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
           let* () = write_message (Json_util.jsonrpc_error ~id:`Null ~code:(-32700) ~message:"Parse error") in
           loop ~broker_root ~negotiated_capabilities_ref
       | Ok request ->
+          let request = connection_request request in
           let method_name =
             match assoc_opt "method" request with
             | Some (`String value) -> (debug_log ("method: " ^ value); Some value)
@@ -261,7 +301,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
               C2c_capability.Claude_channel
           in
           let new_capabilities =
-            if C2c_mcp.mcp_disabled () then [] else
+            if C2c_mcp.mcp_disabled () || hermes_connection_mode () then [] else
               C2c_capability.negotiated_in_initialize
                 ~current:!negotiated_capabilities_ref request
           in
@@ -278,7 +318,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
                C2c_mcp.Broker.set_automated_delivery broker
                  ~session_id:sid ~automated_delivery:new_capable
            | _ -> ());
-          let* response = C2c_mcp.handle_request ~broker_root request in
+          let* response = handle_connection_request ~broker_root request in
           let* () = match response with
             | None -> debug_log "send: (no response)"; Lwt.return_unit
             | Some resp -> debug_log ("send: " ^ String.sub (Yojson.Safe.to_string resp) 0 (min (String.length (Yojson.Safe.to_string resp)) 200)); write_message resp
@@ -578,3 +618,38 @@ let run_inner_server ~broker_root =
     debug_log ("run_inner_server FATAL: " ^ Printexc.to_string exn ^ "\n" ^ Printexc.get_backtrace ());
     raise exn
   end
+
+(* B376: Hermes may share one MCP connection across conversations. It is a
+   separate peer, never the in-process plugin's conversation identity. This
+   environment is used for a fresh exec, resetting environment-derived module
+   state before serving requests. No installer session/alias/broker is captured. *)
+let hermes_connection_env ~broker_root env =
+  let key entry = match String.index_opt entry '=' with
+    | Some i -> String.sub entry 0 i | None -> entry in
+  let forbidden_prefixes =
+    [ "C2C_"; "CODEX_"; "CLAUDE_"; "KIMI_"; "OPENCODE_"; "GROK_"
+    ; "ANTIGRAVITY_"; "MUSE_"; "CURSOR_"; "HERDR_"; "GIT_" ] in
+  let prohibitions = [ "C2C_MCP_DISABLED"; "C2C_HOST_OWNED_MAILBOX"; "C2C_NO_AUTO_REGISTER" ] in
+  let keep entry =
+    let k = key entry in
+    List.mem k prohibitions
+    || (not (List.exists (fun prefix -> String.starts_with ~prefix k) forbidden_prefixes)
+        && not (List.mem k [ "HERMES_SESSION_ID"; "HERMES_CONVERSATION_ID"; "TMUX"; "TMUX_PANE" ]))
+  in
+  let nonce =
+    let ic = open_in_bin "/dev/urandom" in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic)
+      (fun () -> Digest.to_hex (Digest.string (really_input_string ic 32))) in
+  let sid = "hermes-mcp-" ^ nonce in
+  Array.of_list
+    ([ "C2C_MCP_SESSION_ID=" ^ sid
+     ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ sid
+     ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1"
+     ; "C2C_MCP_CLIENT_TYPE=hermes"
+     ; "C2C_MCP_CLIENT_PID=" ^ string_of_int (Unix.getpid ())
+     ; "C2C_HERMES_CONNECTION_READY=" ^ string_of_int (Unix.getpid ())
+     ; "C2C_MCP_CHANNEL_DELIVERY=0"
+     ; "C2C_MCP_AUTO_DRAIN_CHANNEL=0"
+     ; "C2C_MCP_SCHEDULE_TIMER=0" ]
+     @ (match broker_root with None -> [] | Some root -> [ "C2C_MCP_BROKER_ROOT=" ^ root ])
+     @ List.filter keep (Array.to_list env))

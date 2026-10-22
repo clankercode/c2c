@@ -58,19 +58,29 @@ let remove_shared_key ~dry_run path key =
         Some path
       end
 
-(* The only YAML shared key c2c writes is `plugins.enabled.c2c` in
-   ~/.hermes/config.yaml. The surgical edit lives in [C2c_hermes_config] so
+(* Hermes shared YAML entries are `plugins.enabled.c2c` and the marked
+   `mcp_servers.c2c` connection in the active home's config.yaml. The surgical edit lives in [C2c_hermes_config] so
    install and uninstall share one parser (a second, divergent YAML parser is
    how a "shared file" cleanup corrupts an operator's config). Any other YAML
    key is left untouched rather than guessed at. *)
 let remove_shared_yaml_key ~dry_run path key =
-  if key <> "plugins.enabled." ^ C2c_hermes_config.plugin_name then None
+  let remove =
+    if key = "plugins.enabled." ^ C2c_hermes_config.plugin_name then Some C2c_hermes_config.disable
+    else if key = "mcp_servers.c2c" then Some C2c_hermes_config.disable_mcp
+    else None
+  in
+  if remove = None then None
   else if not (Sys.file_exists path) then None
   else
     let content = C2c_utils.read_file_opt path in
     if content = "" then None
     else
-      match C2c_hermes_config.disable content with
+      let updated =
+        match C2c_hermes_config.validate_mcp_document content with
+        | Error msg -> Error msg
+        | Ok () -> (Option.get remove) content
+      in
+      match updated with
       | Error _ -> None
       | Ok updated ->
           if updated = content then None
@@ -577,8 +587,8 @@ let recompute_agy_artifacts () =
    dir in place; it is inert once plugin.yaml and the sources are gone. *)
 let recompute_hermes_artifacts () =
   let home = home_dir () in
-  let plugin_dir = home // ".hermes" // "plugins" // "c2c" in
-  let config = home // ".hermes" // "config.yaml" in
+  let plugin_dir = C2c_setup.hermes_plugins_dir home in
+  let config = C2c_setup.hermes_config_path home in
   let files =
     List.map
       (fun (rel, _) -> C2c_install_manifest.owned_file (plugin_dir // rel))
@@ -589,7 +599,9 @@ let recompute_hermes_artifacts () =
       [ plugin_dir // "skills" // "c2c"; plugin_dir // "skills"; plugin_dir ]
   in
   ( [ C2c_install_manifest.shared_key ~path:config
-        ~key:("plugins.enabled." ^ C2c_hermes_config.plugin_name) ~format:"yaml" ]
+        ~key:("plugins.enabled." ^ C2c_hermes_config.plugin_name) ~format:"yaml"
+    ; C2c_install_manifest.shared_key ~path:config
+        ~key:"mcp_servers.c2c" ~format:"yaml" ]
   , files @ dirs
   , None )
 
@@ -749,6 +761,7 @@ let remove_muse_broker_leftovers ~dry_run ~broker_root =
 (* -------------------------------------------------------------------------- *)
 
 let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
+  let target_dir = if component = "hermes" then C2c_setup.hermes_home (home_dir ()) else target_dir in
   let record = find_manifest_record component target_dir in
   let manifest_target_dir =
     match record with
