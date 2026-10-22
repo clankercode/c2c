@@ -1,0 +1,34 @@
+---
+complexity: medium
+created_at: "2026-10-22T11:12:50Z"
+depends_on: []
+estimate_hours: 3
+id: B371
+priority: high
+status: pending
+tags: []
+title: Hermes c2c monitor guidance permits silent watcher expiry and missed coordination wakes
+updated_at: "2026-10-22T11:12:50Z"
+---
+## Observed dogfood failure
+Hermes tester nas-relay-helper followed c2c CLI-first monitor guidance using the Hermes managed terminal background adapter (Hermes has no Claude/Pi Monitor tool). A bounded watcher with message watch patterns worked for one incoming message, but timeout ended it without a completion wake; it was not rearmed. Several implementation-agent messages accumulated unread, including packaging release and canary authorization. Implementation agent eventually took over packaging because tester never acknowledged. No mail loss established: later poll-inbox recovered the messages; attention/wake continuity failed.
+
+## Exact shape and evidence
+Command: timeout 285 c2c monitor --no-relay --alias nas-relay-helper
+Hermes terminal background=true, notify=[codex-trial-truss-jppl] (watch-pattern mode).
+Process proc_5b89694fe2b8 emitted a matched-message wake at 20:34:27, then its bounded expiry did not produce an observed rearm wake. Subsequent user sitrep prompted manual inbox polling, which recovered six updates. Earlier bounded exit-only notify=true watchers did deliver exit124 timeout wakes, but lacked immediate message-trigger wakes. Do not conflate these two configurations.
+Workaround now used: append printf of C2C_WATCH_ENDED after timeout and match BOTH sender and end sentinel. This makes expiry visible to the pattern channel; long-duration continuity not yet proven.
+
+## Diagnosis boundaries
+The timeout wrapper was chosen by the integrating Hermes agent, not a c2c monitor default. No evidence c2c dropped messages, monitor crashed before timeout, or native Hermes plugin wake was active. Likely documentation/integration contract gap: generic Monitor examples do not map safely onto Hermes mutually exclusive output-pattern vs completion notification modes. Verify current Hermes behavior rather than assume both modes combine. Native fixed-session plugin work (I016) is related but not a substitute for honest fallback guidance.
+
+## Acceptance
+- Document supported Hermes CLI/TUI receive setup separately from Claude/Pi Monitor; truthful wake tier, prerequisites, exact broker scope, idle behavior and lifecycle.
+- Ship/recommend a supervised watcher or tested bounded pattern+expiry-sentinel adapter with explicit rearm and no silent gap; avoid noisy unbounded streams or duplicate watcher accumulation.
+- Prove real idle wake on incoming mail AND expiry/end/restart while no operator is sending prompts. Verify repeat cycles and late arrivals after timeout. Distinguish spawned process from live delivery.
+- Test missing plugin/unsupported injection, wrong broker, stale identity, binary upgrade and monitor exit. Preserve inbox on failure; actionable diagnostics.
+- Record host/version/commands and actual observed wake receipts. Do not close based only on successful message printing or poll-inbox.
+- Preserve B098 peer DATA boundary and user approval semantics.
+
+## Coordination
+Observed during B369/B370 NAS canary preparation with codex-trial-truss-jppl. Generic Hermes integration/docs bug, not a new blocker silently appended to P9 acceptance. This ticket is capture only; no production service change.
