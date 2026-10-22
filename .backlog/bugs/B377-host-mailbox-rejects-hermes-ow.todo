@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-10-22T16:22:49Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-22T16:35:58Z"
 complexity: medium
 created_at: "2026-10-22T13:17:51Z"
 depends_on: []
+duration_minutes: 13.1573469138
 estimate_hours: 1
 id: B377
 priority: medium
 started_at: "2026-10-22T16:22:49Z"
-status: in_progress
+status: done
 tags: []
 title: Host mailbox rejects Hermes-owned alias using hermes- prefix
-updated_at: "2026-10-22T16:22:49Z"
+updated_at: "2026-10-22T16:35:58Z"
 ---
 During Hermes c2c-telegram-inbound plugin dogfooding, c2c host bind rejected the dedicated alias hermes-telegram-inbound with schema_version=1,error=invalid_alias because hermes- is reserved. The actual Hermes plugin was creating an independently fenced host-owned mailbox, not impersonating another session. Reproduced against installed c2c 0.18.2 e655cd26 in an isolated broker with copied registry metadata; alias telegram-inbound succeeded. Workaround committed in standalone plugin 31ad66f. Expected: legitimate Hermes host integrations can use a clearly Hermes-namespaced alias through an authenticated/owned registration path, while retaining collision and anti-impersonation protections. Investigate whether host bind should support an explicit client namespace/ownership mechanism; do not simply remove all reserved-prefix guards. At minimum return actionable reserved-prefix diagnostics and document allowed namespace usage, rather than generic invalid_alias. Acceptance: regression tests cover legitimate Hermes-owned registration, foreign-prefix impersonation rejection, alias collisions, and actionable error details. Preserve concurrent P9 work; this report does not claim existing-session registration paths fail.
 
