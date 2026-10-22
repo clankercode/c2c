@@ -54,7 +54,8 @@ even when the immediate task is narrower.
   managed `c2c start grok` is deferred. agy / Antigravity is CLI-first: skill +
   hooks under `~/.gemini/`; managed `c2c start agy` is real via `AgyAdapter` +
   agentapi wake. Hermes is plugin-first: an in-process Python plugin under
-  `~/.hermes/plugins/c2c/`; no MCP path and no `c2c start hermes` — Hermes runs
+  `~/.hermes/plugins/c2c/`; recommended MCP tools opt in with `--with-mcp`; no
+  `c2c start hermes` — Hermes runs
   its own loop, like Pi Agent. Muse is CLI-first: skill + plugin/hooks;
   managed `c2c start muse` is real via `MuseAdapter`; wake is Monitor-only —
   no out-of-process sender in 1.4.2, B356 parked). Cross-client parity — a
@@ -247,7 +248,7 @@ wake requirement above and #35). Do not over-claim these in docs or to users:
 |---|---|
 | OpenCode | **GUARANTEED** (in-process plugin; idle event + interval) |
 | Pi Agent | **GUARANTEED** (`pi-c2c` extension: `fs.watch` → `poll-inbox` → `pi.sendMessage`) |
-| Hermes | **GUARANTEED** (CLI mode) — Hermes plugin: background watcher → `c2c poll-inbox` → `ctx.inject_message`; **NONE** in gateway mode (no CLI reference) |
+| Hermes | **CONDITIONAL** — verified per-conversation target + operator injection consent + live watcher/host router; selective ACK after accepted DATA injection. Unsupported targets retain mail. MCP tools do not supply wake. |
 | Codex (managed/app-server) | **GUARANTEED for local mail** (inject + gated auto-turn); remote/`@host`/`#` fails closed to inject-only |
 | Kimi, agy | **CONDITIONAL** — out-of-process poster alive (REST POST / agentapi) |
 | Claude Code, Grok, Muse | **CONDITIONAL** — idle wake only while **`c2c monitor`** is armed; without it NONE at true idle (activity hooks only). First-class clients; never GUARANTEED from c2c alone |
@@ -262,21 +263,16 @@ the app-server, OpenCode the plugin API, Hermes `ctx.inject_message`; muse's
 `session-message` is experiment-gated and refused out-of-process send in
 1.4.2 — B356 parked). That is an upstream ask, not our bug.
 
-**Hermes delivery order is load-bearing: peek → inject → drain-on-success.**
-`drain_and_inject` (`data/hermes-plugin/delivery.py`) peeks with
-`c2c peek-inbox`, injects, and only then drains with `c2c poll-inbox` — the same
-persist-first contract as the agy sidecar. Gateway mode (Telegram/Discord) has
-no CLI reference, so `ctx.inject_message` **always** returns `False` there;
-because nothing has been drained yet, the mail stays in the broker inbox and
-`c2c poll-inbox` still delivers it. Gateway mode is therefore **NONE, not
-lossy**.
-
-Do not "simplify" this into drain-first (poll destructively, inject from its
-return value). It looks like it closes the peek/poll race, but it makes the
-gateway path eat every inbound DM silently and forever — and `--ephemeral` mail
-has no archive copy, so that loss is unrecoverable. The race is instead repaired
-at the end of the function: anything that landed between the peek and the drain
-comes back in the drain's return value and is injected immediately.
+**Hermes receive ownership:** profile/session-bound immutable subprocess environments;
+exact invocation and target-key checks; peek → reserve → targeted DATA inject →
+selective `ack-inbox`. Late arrivals and declined injections remain queued.
+Watcher/pre-LLM reservations prevent concurrent delivery; ACK retries avoid
+reinjection in the same process. The installed router requires explicit
+`plugins.entries.c2c.allow_gateway_injection: true`, including TUI. Never infer
+consent or use a latest/keyless target. Actual session finalization tears down
+the binding; per-turn `on_session_end` does not. MCP connections have separate
+identities and no native conversation wake. Configuration and fallback:
+`docs/clients/hermes.md`, `docs/clients/hermes-monitor.md`.
 
 **agy's CONDITIONAL was aspirational until 2026-07-19, and vanilla agy is
 still not there.** Two defects made the row false rather than optimistic:

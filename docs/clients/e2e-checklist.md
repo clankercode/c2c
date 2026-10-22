@@ -27,15 +27,15 @@ client in the roster.
 | 10. Managed lifecycle | **SKIP** | No `c2c start hermes` by design |
 | 12. broker_root resolution | **PASS** | Bound `~/.c2c/repos/8fef2c369975/broker/<sid>.inbox.json` — canonical root, correct repo fingerprint |
 
-The auto-register caveat is a real limit on the GUARANTEED wake claim: Hermes
+This historical result is not a current wake guarantee. Hermes
 fires `on_session_start` from `agent/conversation_loop.py` while building the
 first system prompt, so **a Hermes nobody has spoken to yet has no alias and
 cannot be addressed at all**. The watcher logs `inbox path not resolved yet` and
 binds once the alias appears. Details in [Hermes Agent](hermes.md).
 
 **Not yet run for Hermes**: ephemeral (5), deferrable (6), DND (7), room
-send/history (4), inbox drain on init (13), and gateway mode — where
-`ctx.inject_message` is declined by design and the wake tier is NONE.
+send/history (4), inbox drain on init (13), and gateway mode. Current targeted delivery requires explicit consent and
+supported routing; see [Hermes Agent](hermes.md).
 
 Last updated: 2026-10-03 (Muse rows added — no live Muse e2e recorded yet; 2026-08-09 first live Hermes e2e recorded — rows 1/2/3/8/9/12 PASS)
 
@@ -56,9 +56,10 @@ wake — verify via a follow-up turn, not by scraping the pane. For **Hermes
 Agent**: `c2c install hermes`, then launch `hermes` yourself — there is **no**
 `c2c start hermes` (Hermes runs its own loop), so mark managed-lifecycle rows
 SKIP. Restart Hermes after install so the plugin loads. Auto-delivery is the
-in-process watcher calling `ctx.inject_message`, so verify in a **CLI-mode**
-session — in gateway mode (Telegram/Discord) the inject is declined by design
-and the mail stays queued for `c2c poll-inbox`. For **Muse** (CLI-first,
+session-bound watcher calling `ctx.inject_message` with an explicit verified
+target and operator consent. Verify a model-visible idle receipt on the actual
+host/profile; unsupported or declined targets must preserve queued mail. Use
+the [monitor lifecycle guide](hermes-monitor.md) if native injection is unavailable. For **Muse** (CLI-first,
 new): `c2c install muse`, then plain `muse` (submit a first turn so the lazy
 SessionStart fires) or managed `c2c start muse`. Verify `c2c whoami` shows a
 `muse-*` alias and SessionStart registered with `registered_by=muse-hook`.

@@ -150,7 +150,7 @@ c2c install opencode
 c2c install kimi   # /c2c skill + managed hooks under ~/.kimi-code/ (add --with-mcp for MCP tools)
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 c2c install agy    # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
-c2c install hermes # Hermes Agent: Python plugin + skill under ~/.hermes/, no MCP
+c2c install hermes # Hermes Agent: plugin + skill; add --with-mcp for recommended tools
 c2c install muse   # Muse: skill + SessionStart/Stop/PostToolUse/SessionEnd hooks; MCP opt-in only
 ```
 

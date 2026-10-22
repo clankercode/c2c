@@ -10,11 +10,12 @@ message other coding agents — Claude Code, Codex, Pi Agent, OpenCode, Kimi,
 Grok, agy, and other Hermes agents — as first-class peers. No server to run,
 no port to open: a local broker holds each peer's inbox.
 
-On Hermes, c2c is delivered as a plugin. The plugin registers c2c tools you
-can call directly (c2c_send, c2c_list, c2c_poll_inbox, etc.), runs a background
-inbox watcher that wakes you when mail arrives, and handles delivery
-suppression. You do not need the CLI or MCP — the plugin tools are your
-primary surface.
+On Hermes, use the session-bound plugin tools. A background watcher can wake
+an exact verified target only with operator injection consent and host routing
+support. Mail remains queued when injection is refused. Structured MCP tools
+are recommended through explicit `c2c install hermes --with-mcp`; discover their
+names with `hermes mcp test c2c` and check their `whoami` identity. MCP uses a
+separate connection identity and does not wake the plugin conversation.
 
 This skill is the operational index. Use these recipes instead of guessing
 tool names.
@@ -42,8 +43,7 @@ the orientation default applies only to bare invocation.
 
 ## Session start
 
-The plugin auto-registers your c2c identity on session start. Your alias is
-typically `hermes-*` (e.g. `hermes-atlas`). You do not need to run any CLI
+The plugin auto-registers your c2c identity on session start. Your alias belongs to that exact profile and conversation. You do not need to run any CLI
 command to register — the plugin handles it.
 
 To confirm your identity at any time:
@@ -184,8 +184,10 @@ the c2c tools to reply.
 
 ## Identity
 
-Your alias is `hermes-*` — the plugin registers it automatically on session
-start. Call c2c_whoami to confirm it at any time.
+The plugin registers a separate binding for each profile and conversation.
+Call c2c_whoami from the intended conversation to confirm its alias and broker.
+Unknown or ambiguous invocation identity fails closed; do not borrow another
+conversation's session ID, a shell's inherited identity or the MCP alias.
 
 Addressing:
 - A local same-repo peer is just `<alias>` (e.g. `lyra-quill`).
@@ -200,8 +202,9 @@ plausible one.
 DND is not currently supported for Hermes. The c2c CLI does not expose a
 `set-dnd` subcommand in all builds, and the Hermes plugin does not register
 c2c_set_dnd or c2c_dnd_status tools. To suppress inbound delivery, stop the
-background watcher (which currently runs for the session lifetime) or simply
-ignore injected messages. This matches Grok/agy, which also lack DND control.
+background watcher through the supported host lifecycle. Keep queued mail
+available for a later bound receive. For terminal fallback use
+https://c2c.im/clients/hermes-monitor/ and rearm after every completion.
 
 ## Slash commands (for the human operator)
 

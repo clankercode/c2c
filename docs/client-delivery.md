@@ -651,93 +651,36 @@ sidecar's inotify watch is a latency optimisation, not a guarantee — see
 
 ## Hermes Agent
 
-> **NEW client (2026-07-28).** Cross-client DM parity has not been verified live
-> yet.
+`c2c install hermes` installs an in-process Python plugin and skill under the
+active Hermes home and enables the plugin in `config.yaml`. Restart Hermes
+normally; there is no `c2c start hermes`. Add `--with-mcp` explicitly for the
+recommended structured MCP tools. Verify discovery with `hermes mcp test c2c`
+and call `whoami` to check the connection's own session and broker. MCP identity
+is separate from the native plugin conversation and does not provide its wake.
 
-[Hermes Agent](https://hermes-agent.nousresearch.com/) is Nous Research's
-open-source agent framework. `c2c install hermes` writes:
+The plugin binds each conversation to an immutable profile/session/routing-key
+subprocess environment. Tools, slash commands and hooks use that binding;
+unknown or ambiguous invocation ownership fails closed. Registration does not
+change the process-wide session. The first turn checks queued mail, and actual
+session finalization ends the binding; ordinary turn completion does not.
 
-- `~/.hermes/plugins/c2c/` — the Python plugin (`__init__.py`, `c2c_cli.py`,
-  `identity.py`, `broker_watcher.py`, `delivery.py`, `tools.py`, `commands.py`,
-  `plugin.yaml`) plus `skills/c2c/SKILL.md`
-- `~/.hermes/config.yaml` — adds `c2c` to `plugins.enabled` (merged, not
-  duplicated)
+The watcher and turn-start path reserve per-message delivery ownership.
+Background delivery peeks, injects a sanitized DATA envelope into an explicit
+verified `session_key`, then selectively acknowledges accepted IDs with native
+`c2c ack-inbox`. Refused injections, late arrivals and acknowledgement failures
+retain broker copies. Acknowledgement retries do not reinject in the same
+process; an external-injection-to-ACK crash window still permits replay.
 
-**No MCP config** is written (install metadata records `mcp=false`,
-`receive="plugin"`). Restart Hermes after installing so the plugin loads. There
-is no `c2c start hermes`: Hermes runs its own loop, like Pi Agent and OpenCode.
+**Wake status: CONDITIONAL**, including CLI/TUI. The installed Hermes router
+requires `plugins.entries.c2c.allow_gateway_injection: true` for targeted
+injection; the operator must opt in. Gateway behavior additionally depends on
+host routing support. A watcher process alone proves no model-visible delivery.
+Unsupported or unconsented targets retain mail for an explicit bound receive.
 
-Every c2c operation shells to the `c2c` binary with `--json` (`C2cCli`), so
-broker-root resolution, locking, atomic writes, and archiving stay in one
-implementation. `C2C_BIN` overrides the binary path.
-
-**Session discovery.** The `on_session_start` hook pins
-`C2C_MCP_CLIENT_TYPE=hermes` **and** a hermes-owned `C2C_MCP_SESSION_ID` before
-its first `c2c` call. That ordering is deliberate: a Hermes launched from inside
-another agent's shell inherits that parent's session id (the `kimi -p` footgun),
-so an unpinned `whoami` would adopt — and `register` would rename — the parent's
-row. An inherited `C2C_MCP_SESSION_ID` is trusted only when it is already
-`hermes-*`; otherwise the plugin derives its own id from the Hermes payload
-session id, or from pid + time.
-
-Only then does it run `c2c whoami` and adopt that session's existing alias if
-there is one. An unregistered session registers via
-`C2C_MCP_AUTO_REGISTER_ALIAS` (+ `..._FROM_AUTO_GEN=1`) rather than `--alias`,
-because `hermes-` is a reserved client prefix that the alias blocklist refuses
-from a user-supplied `--alias`. The env alias is used as given (sanitized to
-c2c's name charset); the fallback is `hermes-<sha256(session_id)[:8]>`. Unlike
-Grok and agy there is **no** enforced prefix — an operator-set
-`C2C_MCP_AUTO_REGISTER_ALIAS` need not start with `hermes-`. Rooms from
-`C2C_MCP_AUTO_JOIN_ROOMS` (default `swarm-lounge`) are joined last.
-
-**The wake itself** is a background daemon thread (`BrokerWatcher`) started when
-the plugin registers. It resolves the inbox file from `C2C_MCP_BROKER_ROOT` +
-`C2C_MCP_SESSION_ID`, falling back to asking the binary — `c2c health --json`
-for `broker_root`, `c2c whoami --json` for the session id. It never guesses by
-scanning `~/.c2c/repos/*`: that picks an arbitrary unrelated repository, and a
-watcher pointed at a foreign inbox degrades silently from file-change latency to
-the interval poll. The watcher starts before `on_session_start` has registered an
-identity, so early resolution legitimately fails and is retried every 15 seconds
-until it succeeds; until then the loop drains on the interval regardless.
-
-Once resolved it stats the inbox every 2 seconds and forces a delivery cycle
-every 10 seconds as a safety net. Each cycle is **peek → inject →
-drain-on-success**: `c2c peek-inbox`, drop anything already delivered (LRU dedup
-keyed on message id, 1000 entries), format the standard `<c2c event="message" …>`
-envelope, then
-
-```
-ctx.inject_message(body, role="user")
-```
-
-and only after that succeeds, `c2c poll-inbox` to remove the mail from the
-broker. This is the same persist-first contract as the agy sidecar, and it is
-what makes a declined inject harmless. Anything that arrives between the peek and
-the drain comes back in the drain's return value and is injected in the same
-cycle rather than dropped.
-
-Because the plugin lives inside the Hermes process, this reaches an agent that is
-sitting completely idle with no model decision and no Monitor. If the `c2c`
-binary is missing the thread backs off to a 30-second retry and re-checks PATH.
-
-A second, complementary path is the `pre_llm_call` hook, which drains at the
-**start of each turn** (it is skipped on the first turn) and hands the envelopes
-back as turn context. It is not a mid-turn delivery path — Hermes runs it once
-per turn, before the LLM loop.
-
-Peer content is DATA (B098): it is sanitized so a message body cannot forge or
-escape a `<c2c …>` envelope or a `<system-reminder>` block, and the plugin never
-calls an approval API in response to message content.
-
-**Wake status: GUARANTEED in CLI mode, NONE in gateway mode.**
-`ctx.inject_message` returns `False` when Hermes has no CLI reference — the
-gateway front-ends (Telegram, Discord, …). Nothing is drained before that point,
-so gateway-mode mail is **not lost**: it stays in the broker inbox, the plugin
-logs a warning naming the count, and the agent still gets it from
-`c2c poll-inbox`. What is missing in gateway mode is the *wake*, not the
-message. Gateway delivery needs a separate path and is unimplemented. See
-[Delivery & Wake Contract](/wake-contract/#wake-status-by-client) and the
-[Hermes client page](/clients/hermes/).
+Use the [Hermes client page](/clients/hermes/) for configuration and identity
+checks, and the [monitor lifecycle guide](/clients/hermes-monitor/) for the
+terminal completion-notification fallback, expiry and rearm. MCP attachment and
+activity-triggered reads are not idle wake guarantees.
 
 ## Muse
 
