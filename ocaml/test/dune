@@ -1021,3 +1021,8 @@
  (name test_relay_contact_store)
  (modules test_relay_contact_store)
  (libraries c2c_mcp alcotest yojson unix sqlite3))
+
+(test
+ (name test_relay_contact_outbox)
+ (modules test_relay_contact_outbox)
+ (libraries c2c_mcp alcotest yojson unix lwt.unix))

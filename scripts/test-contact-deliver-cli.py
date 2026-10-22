@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """B369/B370 proof against an exact compiled native binary (buildboxes only).
 
-  python3 scripts/test-contact-deliver-cli.py /absolute/path/to/c2c.exe
+  python3 scripts/test-contact-deliver-cli.py /absolute/path/to/c2c.exe \
+    --mcp-bin /absolute/path/to/c2c_mcp_server.exe --source-commit FULL_SHA
 
 Requires Python 3.9+ and openssl. Runs explicit and shared-send proofs; use
 --explicit-only to restrict this driver. Never builds/installs or uses public
@@ -59,6 +60,27 @@ def binary_digest(binary):
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_mcp_source(binary, source_commit):
+    # Verify the explicit artifact before creating a relay or sending any mail.
+    with tempfile.TemporaryDirectory(prefix="c2c-mcp-source-proof-") as temporary:
+        root = Path(temporary)
+        env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ") if key in os.environ}
+        env.update(HOME=str(root), XDG_CONFIG_HOME=str(root / "config"),
+                   C2C_MCP_BROKER_ROOT=str(root / "broker"), C2C_NO_AUTO_REGISTER="1",
+                   C2C_MCP_AUTO_JOIN_ROOMS="", C2C_MCP_AUTO_DRAIN_CHANNEL="0")
+        call = {"jsonrpc": "2.0", "id": "source-probe", "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "contact-source-proof", "version": "1"}}}
+        result = subprocess.run([binary], cwd=root, env=env, input=json.dumps(call) + "\n",
+                                text=True, capture_output=True, timeout=15)
+        require(result.returncode == 0, "mcp_source_probe_exit")
+        replies = [parse_json(line, "mcp_source_probe_json") for line in result.stdout.splitlines() if line.startswith("{")]
+        initialized = next((reply for reply in replies if reply.get("id") == "source-probe"), {})
+        source = initialized.get("result", {}).get("serverInfo", {}).get("git_hash", "")
+        require(re.fullmatch(r"[0-9a-f]{8}", source) and source_commit.startswith(source),
+                "mcp_compiled_source_matches")
 
 
 def terminate(process):
@@ -492,6 +514,8 @@ def explicit_http(binary):
 def main(shared_only=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", help="absolute path of the exact already-compiled native binary")
+    parser.add_argument("--mcp-bin", help="explicit matching native MCP artifact; required for shared proof")
+    parser.add_argument("--source-commit", help="full source commit shared by both compiled artifacts")
     if not shared_only:
         parser.add_argument("--explicit-only", action="store_true")
     args = parser.parse_args()
@@ -499,6 +523,17 @@ def main(shared_only=False):
     binary = str(Path(args.binary).resolve(strict=True))
     require(os.access(binary, os.X_OK), "native_binary_executable")
     digest = binary_digest(binary)
+    mcp_binary = mcp_digest = None
+    if shared_only or not args.explicit_only:
+        require(args.mcp_bin and Path(args.mcp_bin).is_absolute(), "explicit_absolute_mcp_artifact_required")
+        require(args.source_commit and re.fullmatch(r"[0-9a-f]{40}", args.source_commit), "explicit_source_commit_required")
+        mcp_binary = str(Path(args.mcp_bin).resolve(strict=True))
+        require(os.access(mcp_binary, os.X_OK), "mcp_artifact_executable")
+        mcp_digest = binary_digest(mcp_binary)
+        verify_mcp_source(mcp_binary, args.source_commit)
+        version_env = {key: value for key, value in os.environ.items() if not key.startswith(("C2C_", "RAILWAY_"))}
+        version = subprocess.run([binary, "--version"], env=version_env, text=True, capture_output=True, timeout=10)
+        require(version.returncode == 0 and args.source_commit[:8] in version.stdout, "cli_compiled_source_matches")
     checks = []
     if not shared_only:
         checks.extend(explicit_tls(binary))
@@ -506,11 +541,14 @@ def main(shared_only=False):
     if shared_only or not args.explicit_only:
         shared = runpy.run_path(str(Path(__file__).with_name("contact-shared-send-proof.py")))
         try:
-            checks.extend(shared["shared_proof"](binary))
+            checks.extend(shared["shared_proof"](binary, mcp_binary, args.source_commit))
         except shared["helpers"]["ProofFailure"] as error:
             raise ProofFailure(str(error)) from None
     require(binary_digest(binary) == digest, "tested_binary_unchanged")
+    if mcp_binary:
+        require(binary_digest(mcp_binary) == mcp_digest, "tested_mcp_binary_unchanged")
     print(json.dumps({"ok": True, "proof": "B369-B370-native-contact", "binary_sha256": digest,
+                      "mcp_sha256": mcp_digest, "source_commit": args.source_commit,
                       "checks": checks, "check_count": len(checks), "fixtures_cleaned": True}, sort_keys=True))
 
 

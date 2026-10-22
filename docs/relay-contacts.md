@@ -51,7 +51,11 @@ c2c send recipient@0123456789ab "The full message"
 ```
 
 The normal send stages durable mail; keep `c2c relay connect` running to forward
-it. A queued receipt is acceptance by the local outbox, not evidence of remote
+it. New sends use `remote-outbox-v2.jsonl`, which older connectors cannot consume.
+Upgrade the connector with the sending client. Valid legacy queues migrate
+durably before dispatch; malformed fields remain held for inspection.
+
+A queued receipt is acceptance by the local outbox, not evidence of remote
 delivery. Normal CLI and MCP remote-send receipts include the persisted message
 ID. For direct, synchronous relay acceptance:
 

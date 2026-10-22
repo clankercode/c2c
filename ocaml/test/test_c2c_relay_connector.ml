@@ -263,7 +263,9 @@ let test_local_inbox_path () =
 let test_outbox_path () =
   let p = Conn.outbox_path "/tmp/broker" in
   Alcotest.(check string) "outbox jsonl path"
-    "/tmp/broker/remote-outbox.jsonl" p
+    "/tmp/broker/remote-outbox-v2.jsonl" p;
+  Alcotest.(check string) "legacy queue remains isolated"
+    "/tmp/broker/remote-outbox.jsonl" (Conn.legacy_outbox_path "/tmp/broker")
 
 let test_pseudo_reg_path () =
   let p = Conn.pseudo_reg_path "/var/c2c" in
@@ -877,11 +879,12 @@ let test_outbox_backward_compat () =
   let dir = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
     (* Manually write a legacy entry (pre-fix format) *)
-    let oc = open_out (Conn.outbox_path dir) in
+    let oc = open_out (Conn.legacy_outbox_path dir) in
     Fun.protect ~finally:(fun () -> close_out oc)
       (fun () ->
         output_string oc "{\"from_alias\":\"alice\",\"to_alias\":\"bob@host\",\"content\":\"hi\"}\n");
-    let entries = Conn.read_outbox dir in
+    let entries = Conn.with_outbox_lock dir (fun () ->
+        Conn.migrate_legacy_outbox_locked dir ~relay_url:"https://relay.example") in
     Alcotest.(check int) "one legacy entry" 1 (List.length entries);
     let e = List.hd entries in
     Alcotest.(check int) "attempts=0 for legacy (default)" 0 e.ob_attempts;
@@ -897,11 +900,12 @@ let test_outbox_enqueued_at_int () =
   let dir = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
     (* Write entry with enqueued_at as JSON Int (Yojson emits whole-second as Int) *)
-    let oc = open_out (Conn.outbox_path dir) in
+    let oc = open_out (Conn.legacy_outbox_path dir) in
     Fun.protect ~finally:(fun () -> close_out oc)
       (fun () ->
         output_string oc "{\"from_alias\":\"alice\",\"to_alias\":\"bob@host\",\"content\":\"hi\",\"attempts\":3,\"enqueued_at\":1717200000}\n");
-    let entries = Conn.read_outbox dir in
+    let entries = Conn.with_outbox_lock dir (fun () ->
+        Conn.migrate_legacy_outbox_locked dir ~relay_url:"https://relay.example") in
     Alcotest.(check int) "one entry" 1 (List.length entries);
     let e = List.hd entries in
     Alcotest.(check int) "attempts=3" 3 e.ob_attempts;

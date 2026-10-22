@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import re
 import stat
 import sys
 
@@ -18,7 +19,7 @@ private_json = helpers["private_json"]
 
 
 def outbox(f, who="alice"):
-    path = f.root / who / "broker/remote-outbox.jsonl"
+    path = f.root / who / "broker/remote-outbox-v2.jsonl"
     return [parse_json(line, "outbox_json") for line in path.read_text().splitlines() if line] if path.exists() else []
 
 
@@ -44,12 +45,11 @@ def mcp_send(f, body):
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
             "name": "send", "arguments": {"to_alias": f.route("bob"), "content": body}}},
     ]
-    binary = Path(f.binary)
-    candidates = [binary.with_name("c2c-mcp-server"), binary.parent.parent / "server/c2c_mcp_server.exe"]
-    mcp_binary = next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
-    require(mcp_binary is not None, "native_mcp_binary_required")
-    result = f.command([str(mcp_binary)], f.env(), "native_mcp_send", input_text="".join(json.dumps(call) + "\n" for call in calls))
+    result = f.command([f.mcp_binary], f.env(), "native_mcp_send", input_text="".join(json.dumps(call) + "\n" for call in calls))
     replies = [parse_json(line, "mcp_response_json") for line in result.stdout.splitlines() if line.startswith("{")]
+    initialized = next((reply for reply in replies if reply.get("id") == 1), {})
+    source = initialized.get("result", {}).get("serverInfo", {}).get("git_hash", "")
+    require(re.fullmatch(r"[0-9a-f]{8}", source) and f.source_commit.startswith(source), "mcp_compiled_source_matches")
     response = next((reply for reply in replies if reply.get("id") == 2), {})
     result = response.get("result", {})
     require(not result.get("isError") and isinstance(result.get("content"), list), "mcp_send_tool_success")
@@ -59,8 +59,9 @@ def mcp_send(f, body):
     return receipt
 
 
-def mode_proof(binary, tls):
+def mode_proof(binary, mcp_binary, source_commit, tls):
     with Fixture(binary, tls=tls, server_flag=None if tls else "--allow-contact-http") as f:
+        f.mcp_binary, f.source_commit = mcp_binary, source_commit
         flags = () if tls else ("--allow-http",)
         path, grant = f.issue()
         reverse_path, reverse = f.issue(sender="bob", recipient="alice")
@@ -159,8 +160,8 @@ def mode_proof(binary, tls):
         return f.checks
 
 
-def shared_proof(binary):
-    return mode_proof(binary, True) + mode_proof(binary, False)
+def shared_proof(binary, mcp_binary, source_commit):
+    return mode_proof(binary, mcp_binary, source_commit, True) + mode_proof(binary, mcp_binary, source_commit, False)
 
 
 if __name__ == "__main__":

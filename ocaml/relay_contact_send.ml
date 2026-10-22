@@ -38,7 +38,8 @@ let dispatch ?dir ~relay_url ~identity ~from_alias ~sender_route ~to_alias
                           "content", `String content;
                           "message_id", `String message_id ], true
       | Relay_contact_store.Contact grant ->
-        let secure = Uri.scheme (Uri.of_string relay_url) = Some "https" in
+        let scheme = Option.map String.lowercase_ascii (Uri.scheme (Uri.of_string relay_url)) in
+        let secure = scheme = Some "https" in
         let host = match String.split_on_char '@' to_alias with
           | [_; host] when C2c_name.is_opaque_host_id host ->
             [ "expected_recipient_host_id", `String host ]
@@ -50,7 +51,7 @@ let dispatch ?dir ~relay_url ~identity ~from_alias ~sender_route ~to_alias
                   "expected_delivery_alias", `String grant.delivery_alias;
                   "message_id", `String message_id;
                   "content", `String content ] @ host),
-        (secure || (Uri.scheme (Uri.of_string relay_url) = Some "http"
+        (secure || (scheme = Some "http"
                     && grant.allow_http)) in
     if not allowed then Lwt.return (error "contact_requires_https_or_explicit_http_opt_in")
     else if path = "/contact/v1/deliver" && identity = None then

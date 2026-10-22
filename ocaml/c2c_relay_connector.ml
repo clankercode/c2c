@@ -1224,7 +1224,7 @@ let remove_mobile_binding broker_root ~binding_id =
   write_mobile_bindings broker_root entries
 
 (* ---------------------------------------------------------------------------
- * Outbox (remote-outbox.jsonl) with retry + DLQ
+ * Outbox (remote-outbox-v2.jsonl) with retry + DLQ
  *
  * Gap #1+#6 fix: outbox entries now track attempts and enqueued_at.
  * - unknown_alias / recipient_dead errors → immediate DLQ
@@ -1232,7 +1232,10 @@ let remove_mobile_binding broker_root ~binding_id =
  * - local DLQ at remote-outbox-dlq.jsonl + DM to sender
  * --------------------------------------------------------------------------- *)
 
-let outbox_path broker_root = broker_root // "remote-outbox.jsonl"
+(* Old connectors ignore schema fields and use /send unconditionally. Keep
+   protected intents out of their filename, while sharing their sidecar lock. *)
+let outbox_path broker_root = broker_root // "remote-outbox-v2.jsonl"
+let legacy_outbox_path broker_root = broker_root // "remote-outbox.jsonl"
 let dlq_path broker_root = broker_root // "remote-outbox-dlq.jsonl"
 let outbox_lock_path broker_root = broker_root // "remote-outbox.lock"
 
@@ -1244,7 +1247,7 @@ let max_age_seconds = 3600.0 (* 1 hour *)
    against concurrent append_outbox_entry calls from MCP.
    Without this, sync's write_outbox (which opens with trunc) can clobber
    entries appended during the HTTP send loop (TOCTOU / silent message loss).
-   Compatible with any other Unix flock holder on the same sidecar. *)
+   Uses the same POSIX lock as earlier OCaml connectors. *)
 let with_outbox_lock broker_root f =
   let fd =
     Unix.openfile (outbox_lock_path broker_root) [ O_RDWR; O_CREAT ] 0o644
@@ -1268,81 +1271,218 @@ type outbox_entry = {
   ob_last_error : string option; (* most recent error class *)
 }
 
-let read_outbox broker_root =
-  let path = outbox_path broker_root in
+(* Never include raw JSON, content, IDs or URLs in parse errors. Present-but-
+   invalid fields must NEVER become legacy defaults. *)
+let invalid_outbox () = failwith "outbox_invalid_entry_preserved"
+
+let outbox_route_valid value =
+  match String.split_on_char '@' value with
+  | [alias] -> C2c_name.is_valid alias
+  | [alias; host] -> C2c_name.is_valid alias && C2c_name.is_valid host
+  | _ -> false
+
+let outbox_text_valid ~max_bytes value =
+  String.trim value <> "" && String.length value <= max_bytes
+  && not (String.contains value '\000')
+
+let validate_outbox_entry ~require_id entry =
+  if not (outbox_route_valid entry.ob_from && outbox_route_valid entry.ob_to)
+     || not (outbox_text_valid ~max_bytes:(256 * 1024) entry.ob_content)
+     || entry.ob_attempts < 0 || entry.ob_attempts = max_int
+     || not (Float.is_finite entry.ob_enqueued_at) || entry.ob_enqueued_at < 0.
+  then invalid_outbox ();
+  (match entry.ob_msg_id with
+   | None when not require_id -> ()
+   | Some id when outbox_text_valid ~max_bytes:1024 id -> ()
+   | _ -> invalid_outbox ());
+  (match entry.ob_relay_url with
+   | None -> () (* offline staging: pinned durably by the first new sync *)
+   | Some url ->
+       (match Relay_contact_store.canonical_url url with
+        | Ok _ -> () | Error _ -> invalid_outbox ()));
+  match entry.ob_last_error with
+  | None -> ()
+  | Some value when outbox_text_valid ~max_bytes:4096 value -> ()
+  | Some _ -> invalid_outbox ()
+
+let decode_outbox_entry ~legacy ~now json =
+  let fields = match json with `Assoc fields -> fields | _ -> invalid_outbox () in
+  let allowed = [ "version"; "from_alias"; "to_alias"; "content";
+                  "message_id"; "relay_url"; "attempts"; "enqueued_at";
+                  "last_error"; "relay_unbound" ] in
+  let rec unique seen = function
+    | [] -> ()
+    | (key, _) :: rest ->
+        if List.mem key seen || not (List.mem key allowed) then invalid_outbox ();
+        unique (key :: seen) rest
+  in
+  unique [] fields;
+  let versioned = match List.assoc_opt "version" fields with
+    | None when legacy -> false
+    | Some (`Int 2) -> true
+    | _ -> invalid_outbox () in
+  (* Offline staging is explicit in v2. A missing URL alone is only a legacy
+     omission; losing a v2 URL must not silently reroute the message. *)
+  (match List.assoc_opt "relay_url" fields, List.assoc_opt "relay_unbound" fields with
+   | Some (`String _), None -> ()
+   | None, Some (`Bool true) when versioned -> ()
+   | None, None when not versioned -> ()
+   | _ -> invalid_outbox ());
+  let required_string key =
+    match List.assoc_opt key fields with
+    | Some (`String value) -> value
+    | _ -> invalid_outbox () in
+  let optional_string key =
+    match List.assoc_opt key fields with
+    | None -> None
+    | Some (`String value) -> Some value
+    | Some _ -> invalid_outbox () in
+  let attempts = match List.assoc_opt "attempts" fields with
+    | None when not versioned -> 0
+    | Some (`Int value) -> value
+    | _ -> invalid_outbox () in
+  let enqueued_at = match List.assoc_opt "enqueued_at" fields with
+    | None when not versioned -> now
+    | Some (`Float value) -> value
+    | Some (`Int value) -> float_of_int value
+    | _ -> invalid_outbox () in
+  let entry = {
+    ob_from = required_string "from_alias";
+    ob_to = required_string "to_alias";
+    ob_content = required_string "content";
+    ob_msg_id = optional_string "message_id";
+    ob_relay_url = optional_string "relay_url";
+    ob_attempts = attempts; ob_enqueued_at = enqueued_at;
+    ob_last_error = optional_string "last_error";
+  } in
+  (* A versioned row must retain its original ID, even in the old file. *)
+  validate_outbox_entry
+    ~require_id:versioned entry;
+  fields, entry
+
+let read_outbox_rows ~legacy path =
   if not (Sys.file_exists path) then []
   else
     let ic = open_in path in
-    let now = Unix.gettimeofday () in
-    let rec loop acc =
-      match try Some (input_line ic) with End_of_file -> None with
-      | None -> close_in ic; List.rev acc
-      | Some line ->
-          let trimmed = String.trim line in
-          if trimmed = "" then loop acc
-          else
-            try
-              let json = Yojson.Safe.from_string trimmed in
-              let open Yojson.Safe.Util in
-              let from = match json |> member "from_alias" with `String s -> s | _ -> "" in
-              let to_ = match json |> member "to_alias" with `String s -> s | _ -> "" in
-              let content = match json |> member "content" with `String s -> s | _ -> "" in
-              let msg_id = match json |> member "message_id" with `String s -> Some s | _ -> None in
-              let relay_url = match json |> member "relay_url" with `String s -> Some s | _ -> None in
-              if from = "" || to_ = "" then failwith "invalid_outbox_entry";
-              (* New fields with defaults for backward compat.
-                 Legacy entries (pre-fix) have no attempts/enqueued_at — default
-                 attempts=0 (retry from scratch) and enqueued_at=now (don't
-                 trigger max_age on upgrade if relay was briefly flaky). *)
-              let attempts = match json |> member "attempts" with `Int i -> i | _ -> 0 in
-              let enqueued_at =
-                match json |> member "enqueued_at" with
-                | `Float f -> f
-                | `Int i -> float_of_int i  (* Yojson emits whole-second floats as Int *)
-                | _ -> now
-              in
-              let last_error = match json |> member "last_error" with `String s -> Some s | _ -> None in
-              loop ({ ob_from = from; ob_to = to_; ob_content = content;
-                      ob_msg_id = msg_id; ob_relay_url = relay_url; ob_attempts = attempts;
-                      ob_enqueued_at = enqueued_at; ob_last_error = last_error } :: acc)
-            with _ -> close_in_noerr ic; failwith "outbox_invalid_entry_preserved"
-    in
-    loop []
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      let now = Unix.gettimeofday () in
+      let rec loop acc =
+        match input_line ic with
+        | line ->
+            if String.trim line = "" then loop acc
+            else
+              let row =
+                try decode_outbox_entry ~legacy ~now (Yojson.Safe.from_string line)
+                with _ -> invalid_outbox () in
+              loop (row :: acc)
+        | exception End_of_file -> List.rev acc
+      in
+      loop [])
 
-let write_outbox broker_root entries =
-  let path = outbox_path broker_root in
-  if entries = [] then (try Sys.remove path with _ -> ())
-  else
-    (* B305 review fix: temp + rename (atomic, mode-preserving) instead of
-       truncate-in-place — a kill mid-rewrite used to leave a partial file
-       whose unparseable tail read_outbox silently skipped. Callers hold
-       with_outbox_lock across the rewrite. *)
-    let buf = Buffer.create 256 in
-    List.iter (fun e ->
-      let msg_id_assoc = match e.ob_msg_id with
-        | Some m -> ["message_id", `String m]
-        | None -> []
-      in
-      let extra = [
-        "attempts", `Int e.ob_attempts;
-        "enqueued_at", `Float e.ob_enqueued_at;
-      ] in
-      let extra = match e.ob_last_error with
-        | Some err -> ("last_error", `String err) :: extra
-        | None -> extra
-      in
-      let json = `Assoc (
-        ["from_alias", `String e.ob_from;
-         "to_alias", `String e.ob_to;
-         "content", `String e.ob_content]
-        @ (match e.ob_relay_url with Some u -> ["relay_url", `String u] | None -> [])
-        @ msg_id_assoc @ extra
-      ) in
-      Buffer.add_string buf (Yojson.Safe.to_string json ^ "\n")
-    ) entries;
-    match C2c_io.write_file_atomic path (Buffer.contents buf) with
+(* Reads only the isolated new queue. Legacy import is explicit and locked. *)
+let read_outbox broker_root =
+  List.map snd (read_outbox_rows ~legacy:false (outbox_path broker_root))
+
+let outbox_entry_json entry =
+  validate_outbox_entry ~require_id:true entry;
+  `Assoc (
+    [ "version", `Int 2;
+      "from_alias", `String entry.ob_from;
+      "to_alias", `String entry.ob_to;
+      "content", `String entry.ob_content;
+      "attempts", `Int entry.ob_attempts;
+      "enqueued_at", `Float entry.ob_enqueued_at ]
+    @ (match entry.ob_msg_id with Some id -> ["message_id", `String id] | None -> [])
+    @ (match entry.ob_relay_url with
+       | Some url -> ["relay_url", `String url]
+       | None -> ["relay_unbound", `Bool true])
+    @ (match entry.ob_last_error with Some err -> ["last_error", `String err] | None -> []))
+
+let write_outbox_file path entries =
+  (* Validate the WHOLE batch before touching either original file. *)
+  let lines = List.map (fun entry -> Yojson.Safe.to_string (outbox_entry_json entry)) entries in
+  if lines = [] then begin
+    if Sys.file_exists path then begin
+      Unix.unlink path;
+      C2c_io.fsync_path (Filename.dirname path)
+    end
+  end else
+    (* B305: atomic, mode-preserving rewrite; callers hold with_outbox_lock
+       over read, HTTP sends and rewrite. Fsync precedes any legacy unlink. *)
+    let perm = if Sys.file_exists path then None else Some 0o600 in
+    match C2c_io.write_file_atomic ?perm path (String.concat "\n" lines ^ "\n") with
     | Ok () -> C2c_io.fsync_file_and_parent path
     | Error msg -> failwith msg
+
+let write_outbox broker_root entries =
+  write_outbox_file (outbox_path broker_root) entries
+
+(* Caller MUST hold remote-outbox.lock, including through sends. Import is a
+   transaction at the filesystem boundary: validate both files, merge in memory,
+   persist normalized legacy IDs/URLs, durably copy to v2, unlink the legacy
+   file, fsync its directory, THEN send. Normalizing the source first prevents
+   a changing inode/mtime after an old client's append from minting new IDs.
+   A crash after copy but before unlink replays the exact copy once. No random
+   IDs occur here, and an existing destination is never replaced on replay. *)
+let migrate_legacy_outbox_locked broker_root ~relay_url =
+  (match Relay_contact_store.canonical_url relay_url with
+   | Ok _ -> () | Error _ -> invalid_outbox ());
+  let current = read_outbox broker_root in
+  let legacy_path = legacy_outbox_path broker_root in
+  let legacy = read_outbox_rows ~legacy:true legacy_path in
+  (* Namespace separate old-client batches, including reuse of an old inode.
+     The computed IDs are committed into the legacy source before copying, so
+     replay uses explicit IDs even if its metadata changes or a tail is added. *)
+  let source = if legacy = [] then "" else
+      let st = Unix.stat legacy_path in
+      Printf.sprintf "%d:%d:%.17g:%.17g"
+        st.Unix.st_dev st.Unix.st_ino st.Unix.st_mtime st.Unix.st_ctime in
+  let pin entry = match entry.ob_relay_url with
+    | Some _ -> entry
+    | None -> {entry with ob_relay_url = Some relay_url} in
+  let current = List.map pin current in
+  let occurrences = Hashtbl.create 17 in
+  let merged, staged = List.fold_left (fun (entries, staged) (fields, original) ->
+    (* Sorted fields make whitespace/key-order changes harmless. The occurrence
+       distinguishes genuinely separate identical no-ID rows in a legacy batch. *)
+    let seed = Yojson.Safe.to_string (`Assoc (List.sort compare fields)) in
+    let occurrence = Option.value (Hashtbl.find_opt occurrences seed) ~default:0 in
+    Hashtbl.replace occurrences seed (occurrence + 1);
+    let message_id = match original.ob_msg_id with
+      | Some id -> id
+      | None -> "legacy-v1-" ^ Digestif.SHA256.(to_hex (digest_string
+          ("c2c-outbox-migration/1:" ^ source ^ ":" ^ string_of_int occurrence ^ ":" ^ seed))) in
+    let original = {original with ob_msg_id = Some message_id} in
+    match List.filter (fun entry -> entry.ob_msg_id = Some message_id) entries with
+    | [] ->
+        let entry = pin original in
+        entries @ [entry], entry :: staged
+    | [copied] ->
+        (* Defaults for genuinely omitted fields come from the durable copy.
+           An omitted URL must not adopt today's relay after a config change. *)
+        let candidate = {
+          original with
+          ob_relay_url = (if List.mem_assoc "relay_url" fields then original.ob_relay_url
+                          else copied.ob_relay_url);
+          ob_enqueued_at = (if List.mem_assoc "enqueued_at" fields then original.ob_enqueued_at
+                            else copied.ob_enqueued_at);
+        } in
+        if candidate = copied then entries, copied :: staged
+        else failwith "outbox_migration_conflict_preserved"
+    | _ -> failwith "outbox_migration_conflict_preserved"
+  ) (current, []) legacy in
+  (* Even without legacy rows, first-sync offline destinations must be committed
+     before an HTTP attempt. A malformed/conflicting batch never reaches here. *)
+  (* Valid legacy mail was already visible to old readers. Only that existing
+     mail is normalized here; NEW protected appends never use the old path.
+     All corruption/conflict checks above finish before either file changes. *)
+  if legacy <> [] then write_outbox_file legacy_path (List.rev staged);
+  write_outbox broker_root merged;
+  if Sys.file_exists legacy_path then begin
+    Unix.unlink legacy_path;
+    C2c_io.fsync_path broker_root
+  end;
+  merged
 
 (* Append a single entry to the DLQ (append-only). *)
 let append_dlq_entry broker_root entry ~reason =
@@ -2150,11 +2290,19 @@ let touch_connector_last_sync broker_root =
          Unix.rename tmp path)
   with _ -> ()
 
-(** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
-    Used by enqueue_message when the target alias is remote (contains '@'). *)
+(** Append a new intent ONLY to the isolated v2 queue. Old connectors never
+    see its ID, grant selection, or destination. prepare pins locally, no HTTP. *)
 let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id () =
-  let message_id = Option.value message_id ~default:(Relay_contact_send.new_message_id ()) in
+  let message_id = match message_id with
+    | Some id -> id
+    | None -> Relay_contact_send.new_message_id () in
   let relay_url = Relay_activation.url () in
+  let entry = {
+    ob_from = from_alias; ob_to = to_alias; ob_content = content;
+    ob_msg_id = Some message_id; ob_relay_url = relay_url;
+    ob_attempts = 1; ob_enqueued_at = Unix.gettimeofday (); ob_last_error = None;
+  } in
+  let line = Yojson.Safe.to_string (outbox_entry_json entry) ^ "\n" in
   let identity = match Relay_contact_send.load_identity () with Ok id -> Some id | Error _ -> None in
   (* Preparing does no network I/O. Commit route/grant/ID before a connector can
      observe this line; never silently substitute a new grant during retry. *)
@@ -2165,15 +2313,11 @@ let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id (
          ~from_alias ~content ~message_id () with
       | Ok _ -> () | Error code -> invalid_arg ("contact send held: " ^ code)));
   let path = outbox_path broker_root in
-  let json = `Assoc (
-    ["from_alias", `String from_alias; "to_alias", `String to_alias;
-     "content", `String content; "message_id", `String message_id;
-     "attempts", `Int 1; "enqueued_at", `Float (Unix.gettimeofday ())]
-    @ (match relay_url with Some u -> ["relay_url", `String u] | None -> [])) in
-  let line = Yojson.Safe.to_string json ^ "\n" in
   with_outbox_lock broker_root (fun () ->
+    (* Do not append to a damaged queue and later reinterpret its tail. *)
+    ignore (read_outbox broker_root);
     let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o600 path in
-    Fun.protect ~finally:(fun () -> close_out oc)
+    Fun.protect ~finally:(fun () -> close_out_noerr oc)
       (fun () -> output_string oc line; flush oc; Unix.fsync (Unix.descr_of_out_channel oc)));
   C2c_io.fsync_path (Filename.dirname path)
 
@@ -3275,12 +3419,7 @@ let sync (t : t) : sync_result Lwt.t =
      also serialise with any other outbox reader/writer. *)
   let outbox_forwarded, outbox_failed, _remaining_outbox, dlqed, send_errors =
     with_outbox_lock t.broker_root (fun () ->
-      let outbox = read_outbox t.broker_root |> List.map (fun entry ->
-        { entry with ob_msg_id = Some (Option.value entry.ob_msg_id
-              ~default:(Relay_contact_send.new_message_id ()));
-          ob_relay_url = Some (Option.value entry.ob_relay_url ~default:t.relay_url) }) in
-      (* Migrate legacy IDs and destinations durably before the first HTTP call. *)
-      write_outbox t.broker_root outbox;
+      let outbox = migrate_legacy_outbox_locked t.broker_root ~relay_url:t.relay_url in
       (* B297: the send arm knows the sender alias even though the relay's
          /send does not require the sender's lease. *)
       let mk_send_err ?code ~from detail : pass_error =
@@ -4217,6 +4356,7 @@ let no_work_sync_result () : sync_result =
 let machine_root_sync_is_noop broker_root =
   read_local_registrations broker_root = []
   && read_outbox broker_root = []
+  && not (Sys.file_exists (legacy_outbox_path broker_root))
   && read_mobile_bindings broker_root = []
 
 let start_machine_impl ~sync_once ~discover_roots

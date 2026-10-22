@@ -96,7 +96,9 @@ let test_append_during_slow_sync_survives () =
             ]
             (fun srv ->
                write_eligible_registry tmp;
-               let outbox = Filename.concat tmp "remote-outbox.jsonl" in
+               (* An old client appends here; sync imports it under the SAME
+                  lock before forwarding and the concurrent v2 append. *)
+               let outbox = Conn.legacy_outbox_path tmp in
                let oc = open_out outbox in
                output_string oc
                  "{\"from_alias\":\"out-sender\",\"to_alias\":\"dst@remote\",\"content\":\"A\"}\n";
@@ -197,7 +199,8 @@ let test_write_outbox_preserves_file_mode () =
   Unix.chmod path 0o600;
   Conn.write_outbox tmp
     [ { Conn.ob_from = "a"; ob_to = "b@h"; ob_content = "new";
-        ob_msg_id = None; ob_relay_url = None; ob_attempts = 1; ob_enqueued_at = 0.0;
+        ob_msg_id = Some "mode-test"; ob_relay_url = Some "https://relay.example";
+        ob_attempts = 1; ob_enqueued_at = 0.0;
         ob_last_error = None } ];
   Alcotest.(check int) "outbox mode preserved across rewrite" 0o600
     ((Unix.stat path).st_perm)

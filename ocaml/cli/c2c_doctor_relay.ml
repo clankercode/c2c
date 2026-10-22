@@ -778,7 +778,10 @@ let check_connector ~relay_url ~scoped_procs ~state ~now =
   of_rd (Relay_doctor.connector_check ~relay_url ~scoped_procs ~state ~now)
 
 let check_outbox ~broker_root =
-  let entries = C2c_relay_connector.read_outbox broker_root in
+  try
+  let entries = C2c_relay_connector.read_outbox broker_root
+      @ List.map snd (C2c_relay_connector.read_outbox_rows ~legacy:true
+          (C2c_relay_connector.legacy_outbox_path broker_root)) in
   let depth = List.length entries in
   let now = Unix.gettimeofday () in
   if depth = 0 then
@@ -807,7 +810,7 @@ let check_outbox ~broker_root =
       if stuck then
         Some (sprintf
                 "c2c relay connect --relay-url %s --once   # drain now; check relay reachability\n\
-                 # inspect stuck entries: head $(c2c root)/remote-outbox.jsonl"
+                 # inspect both remote-outbox-v2.jsonl and legacy remote-outbox.jsonl; preserve queued mail"
                 url)
       else if deep then
         Some "c2c relay connect --once   # drain the backlog"
@@ -830,6 +833,12 @@ let check_outbox ~broker_root =
                        (age_str now oldest) per_recip)
     ; fix_command
     ; docs_url = Some docs_relay }
+
+  with _ ->
+    { check_id = "relay.outbox"; status = Fail;
+      message = "remote outbox unreadable or malformed; pending mail preserved";
+      detail = Some "Do not recreate send IDs or change destinations. Restore the original queue metadata before retrying.";
+      fix_command = None; docs_url = Some docs_relay }
 
 (* Scheme/attempt-aware capabilities matrix (Relay_doctor.capabilities_check):
    subscribe reflects the actual `c2c relay subscribe` outcome for the

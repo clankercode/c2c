@@ -562,10 +562,10 @@ let test_fenced_send () = with_root (fun root ->
   rejects (fun () -> send sender (alias recipient) "stale local");
   rejects (fun () -> send sender "peer@remote" "stale remote");
   check "stale remote did not write outbox" false
-    (Sys.file_exists (Filename.concat root "remote-outbox.jsonl"));
+    (Sys.file_exists (C2c_relay_connector.outbox_path root));
   Alcotest.(check int) "stale local did not append" 1 (List.length (fields (peek root recipient) "messages"));
   ignore (send current "peer@remote" "remote DATA");
-  let outbox = Yojson.Safe.from_string (String.trim (bytes (Filename.concat root "remote-outbox.jsonl"))) in
+  let outbox = Yojson.Safe.from_string (String.trim (bytes (C2c_relay_connector.outbox_path root))) in
   Alcotest.(check string) "remote uses current stored sender" (alias current) (text outbox "from_alias");
   let broker = B.create ~root in
   let now = Unix.gettimeofday () in

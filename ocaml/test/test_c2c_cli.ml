@@ -636,7 +636,7 @@ let test_send_unknown_alias_routes_to_relay_outbox () =
   with_temp_dir (fun dir ->
       (* Use a temp broker root with no registrations so the alias is
          guaranteed unknown locally. With relay fallback, unknown aliases
-         are queued to remote-outbox.jsonl for cross-host delivery rather
+         are queued to remote-outbox-v2.jsonl for cross-host delivery rather
          than erroring. C2C_SEND_MESSAGE_FIXTURE was never checked by the
          OCaml binary; the old test hit the real broker and was flaky. *)
       let outfile = Filename.temp_file "c2c-send" ".out" in
@@ -1156,7 +1156,7 @@ let test_send_remote_target_reports_queued_not_ok () =
           check bool "warns about the missing relay connector" true
             (string_contains content "queued locally");
           (* And the message really did land in the local relay outbox. *)
-          let outbox = read_file (Filename.concat dir "remote-outbox.jsonl") in
+          let outbox = read_file (C2c_relay_connector.outbox_path dir) in
           check bool "outbox recorded the remote send" true
             (string_contains outbox "peer@remotehost.example")))
 

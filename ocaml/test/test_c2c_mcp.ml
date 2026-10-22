@@ -9771,7 +9771,7 @@ let test_large_inbox_drains_all_messages () =
       let after = C2c_mcp.Broker.read_inbox broker ~session_id:"s-dst" in
       check int "inbox empty after drain" 0 (List.length after))
 
-(* Remote alias: to_alias containing '@' is appended to remote-outbox.jsonl
+(* Remote alias: to_alias containing '@' is appended to remote-outbox-v2.jsonl
    for async relay forwarding, not written to a local inbox. *)
 let test_send_remote_alias_appends_to_outbox () =
   with_temp_dir (fun dir ->
@@ -9782,7 +9782,7 @@ let test_send_remote_alias_appends_to_outbox () =
         ~to_alias:"lyra@relay"
         ~content:"hello across machines"
         ();
-      let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+      let outbox_path = C2c_relay_connector.outbox_path dir in
       check bool "outbox file created" true (Sys.file_exists outbox_path);
       (* Read and verify the JSON line. *)
       let json_str = Stdlib.input_line (open_in outbox_path) in
@@ -14308,7 +14308,7 @@ let test_notify_unknown_alias_appends_to_outbox_via_relay_fallback () =
       check int "both recipients notified (bob=local, ghost=outbox)" 2
         (List.length notified);
       (* Verify the known recipient delivered locally, ghost went to outbox. *)
-      let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+      let outbox_path = C2c_relay_connector.outbox_path dir in
       check bool "outbox file created for ghost alias" true
         (Sys.file_exists outbox_path))
 
@@ -14412,7 +14412,7 @@ let test_notify_unknown_alias_logs_ok_via_outbox_fallback () =
       check bool "no error field on successful outbox append" false
         (contains "\"error\":");
       (* Verify the outbox file was created for the ghost alias. *)
-      let outbox_path = Filename.concat dir "remote-outbox.jsonl" in
+      let outbox_path = C2c_relay_connector.outbox_path dir in
       check bool "outbox file created for ghost alias" true
         (Sys.file_exists outbox_path))
 

@@ -747,9 +747,21 @@ let test_connector_invalid_policy_denies_inbound_but_keeps_sync () =
           write_registry broker_root;
           write_file (C2c_relay_connector.inbound_policy_path broker_root)
             {|{"default_max_bytes":|};
-          C2c_relay_connector.append_outbox_entry broker_root
-            ~from_alias:sm_alias ~to_alias:"remote-peer@host"
-            ~content:"outbound-still-works" ();
+          (* Pin the intended fixture origin and isolate identity/contact state;
+             the operator's real relay configuration is not this test's target. *)
+          let saved_url = Sys.getenv_opt "C2C_RELAY_URL"
+          and saved_config = Sys.getenv_opt "XDG_CONFIG_HOME"
+          and saved_identity = Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" in
+          Fun.protect ~finally:(fun () ->
+            List.iter (fun (key, value) -> Unix.putenv key (Option.value value ~default:""))
+              ["C2C_RELAY_URL", saved_url; "XDG_CONFIG_HOME", saved_config;
+               "C2C_RELAY_IDENTITY_PATH", saved_identity]) (fun () ->
+            Unix.putenv "C2C_RELAY_URL" (S.url srv);
+            Unix.putenv "XDG_CONFIG_HOME" (Filename.concat broker_root "fixture-config");
+            Unix.putenv "C2C_RELAY_IDENTITY_PATH" (Filename.concat broker_root "absent-fixture-identity");
+            C2c_relay_connector.append_outbox_entry broker_root
+              ~from_alias:sm_alias ~to_alias:"remote-peer@host"
+              ~content:"outbound-still-works" ());
           let t = make_connector ~relay_url:(S.url srv) ~broker_root in
           let (r : C2c_relay_connector.sync_result) = run_sync t in
           check (list string) "registration continues" [ sm_alias ] r.registered;
