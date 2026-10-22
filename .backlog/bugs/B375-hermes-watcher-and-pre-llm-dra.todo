@@ -1,0 +1,16 @@
+---
+complexity: high
+created_at: "2026-10-22T11:16:38Z"
+depends_on: []
+estimate_hours: 4
+id: B375
+priority: medium
+status: pending
+tags: []
+title: Hermes watcher and pre-LLM drain race duplicates transcript delivery
+updated_at: "2026-10-22T11:16:38Z"
+---
+Pause watcher after novelty filter; execute pre_llm drain; resume watcher injection. Same message delivered through both paths and polled twice. Two concurrent watcher-style calls also inject twice. Dedup lock only protects individual set operations, not delivery ownership. Require atomic in-flight reservation/serialization with rollback on refusal, no locks across unsafe blocking callbacks, and deterministic race tests proving one accepted delivery plus retry after failure.
+
+## Evidence and scope
+Isolated mocked probes against installed ~/.hermes/plugins/c2c; seven Python files match c2c data/hermes-plugin. Reproduced by parent via PYTHONDONTWRITEBYTECODE=1 python3 ~/.hermes/cache/scratch/c2c-session-probe.py; results sibling c2c-session-probe-results.json. No live mail, services or configuration touched. Preserve/rehome regression fixture into repo tests before scratch expires. These are isolated reproductions, not observed production disclosure/loss. Coordinate with I016 and B371; separate from frozen b8 B369/B370 relay candidate. No compilation on xsm; use buildboxes for required build gates.

@@ -1,0 +1,16 @@
+---
+complexity: high
+created_at: "2026-10-22T11:16:38Z"
+depends_on: []
+estimate_hours: 4
+id: B374
+priority: high
+status: pending
+tags: []
+title: Hermes late-arrival drain loses undelivered mail when second injection fails
+updated_at: "2026-10-22T11:16:38Z"
+---
+Initial peeked message inject succeeds; second message arrives between peek and poll. Poll drains both; second injection declines. Inbox empty, delivered count1, late message not marked/delivered; warning log is only fallback. Source delivery.py _inject_drained / drain_and_inject. Require selective ack or durable retry for drained extras, restart-safe retry, safe logging (not sole storage), and failure/arrival interleaving tests. Preserve initial peek-inject-drain refusal semantics.
+
+## Evidence and scope
+Isolated mocked probes against installed ~/.hermes/plugins/c2c; seven Python files match c2c data/hermes-plugin. Reproduced by parent via PYTHONDONTWRITEBYTECODE=1 python3 ~/.hermes/cache/scratch/c2c-session-probe.py; results sibling c2c-session-probe-results.json. No live mail, services or configuration touched. Preserve/rehome regression fixture into repo tests before scratch expires. These are isolated reproductions, not observed production disclosure/loss. Coordinate with I016 and B371; separate from frozen b8 B369/B370 relay candidate. No compilation on xsm; use buildboxes for required build gates.
