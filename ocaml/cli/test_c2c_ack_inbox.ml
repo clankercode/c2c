@@ -231,6 +231,122 @@ let test_untrusted_inbox () = fixture (fun home broker ->
       Yojson.Safe.to_string (`List (List.map C2c_broker.message_to_json [ message "a"; message "a" ])) ];
   check_ids "untrusted queue never archived" [] (archive_ids broker))
 
+let test_error_redaction () = fixture (fun home broker ->
+  let path = inbox_path broker ~session_id:sid in
+  let secret = "PRIVATE_EPHEMERAL_BODY_B374" in
+  let raw = "[" ^ secret ^ "]" in
+  write path raw;
+  let rc, out, err = cli ~home ~broker (ack_args [ "a" ]) in
+  refused (rc, out, err);
+  check string "redacted failure JSON"
+    "{\"ok\":false,\"error\":\"unable to acknowledge inbox: queue read or durable update failed\"}"
+    (Yojson.Safe.to_string (Yojson.Safe.from_string out));
+  check string "no parser payload on stderr" "" err;
+  check string "secret-bearing corrupt queue preserved" raw (read path))
+
+let host_bind home broker owner_id =
+  C2c_host_mailbox.bind ~environment_id:"ack-test" ~thread_id:"host-thread"
+    ~workspace:home ~broker_root:(B.root broker) ~owner_id ~owner_pid:(Unix.getpid ()) ()
+
+let host_sid = fst (C2c_host_mailbox.identity ~environment_id:"ack-test" ~thread_id:"host-thread")
+
+let test_native_host () = fixture (fun home broker ->
+  ignore (host_bind home broker "first");
+  B.save_inbox broker ~session_id:host_sid [ message "host-mail" ];
+  let original = read (inbox_path broker ~session_id:host_sid) in
+  refused (cli ~home ~broker ~session_id:host_sid (ack_args [ "host-mail" ]));
+  ignore (host_bind home broker "new-generation");
+  refused (cli ~home ~broker ~session_id:host_sid (ack_args [ "host-mail" ]));
+  check bool "broker refuses native host without env flags" true
+    (match B.ack_inbox broker ~session_id:host_sid ~message_ids:[ "host-mail" ] with
+     | Error _ -> true | Ok _ -> false);
+  check string "host mail byte-identical through rebind" original (read (inbox_path broker ~session_id:host_sid));
+  check int "no unauthorized archive" 0 (List.length (B.read_archive broker ~session_id:host_sid ~limit:100)))
+
+let test_host_publication_race rebind = fixture (fun home broker ->
+  if rebind then ignore (host_bind home broker "first");
+  B.save_inbox broker ~session_id:host_sid [ message "host-mail" ];
+  let original = read (inbox_path broker ~session_id:host_sid) in
+  let ready_r, ready_w = Unix.pipe ~cloexec:true () in
+  let release_r, release_w = Unix.pipe ~cloexec:true () in
+  let child = Unix.fork () in
+  if child = 0 then begin
+    Unix.close ready_r; Unix.close release_w;
+    C2c_host_mailbox.set_after_state_write_for_test (Some (fun () ->
+      ignore (Unix.write_substring ready_w "r" 0 1);
+      let byte = Bytes.create 1 in
+      if Unix.read release_r byte 0 1 <> 1 then Unix._exit 79));
+    (try ignore (host_bind home broker "next"); Unix._exit 0
+     with _ -> Unix._exit 80)
+  end;
+  Unix.close ready_w; Unix.close release_r;
+  let waited = ref false in
+  Fun.protect ~finally:(fun () ->
+    Unix.close ready_r; Unix.close release_w;
+    if not !waited then begin
+      (try Unix.kill child Sys.sigkill with _ -> ());
+      ignore (Unix.waitpid [] child)
+    end) (fun () ->
+    let readable, _, _ = Unix.select [ ready_r ] [] [] 10. in
+    check bool "publication reached registry-locked barrier" true (readable <> []);
+    let byte = Bytes.create 1 in
+    check int "publisher ready" 1 (Unix.read ready_r byte 0 1);
+    let attempt = start_cli ~home ~broker ~session_id:host_sid (ack_args [ "host-mail" ]) in
+    ignore (Unix.write_substring release_w "g" 0 1);
+    let _, result = Unix.waitpid [] child in
+    waited := true;
+    check bool "publication completed" true (result = Unix.WEXITED 0);
+    refused (finish_cli attempt);
+    check string "publication/ACK race preserves host mail" original (read (inbox_path broker ~session_id:host_sid))))
+
+let test_buffered_archive_failure () = fixture (fun _ broker ->
+  B.save_inbox broker ~session_id:sid [ message "a"; message "keep" ];
+  let archive = B.archive_path broker ~session_id:sid in
+  C2c_io.mkdir_p (Filename.dirname archive);
+  Unix.symlink "/dev/full" archive;
+  (* A short archive record fits in the output-channel buffer. /dev/full
+     rejects its flush at close. Simulate successful downstream fsync to
+     prove it cannot disguise the earlier buffered write error. *)
+  C2c_io.set_fsync_for_test (Some (fun _ _ -> ()));
+  let failed = try ignore (ack broker [ "a" ]); false with Sys_error _ -> true in
+  C2c_io.set_fsync_for_test None;
+  check bool "buffered archive failure propagated" true failed;
+  check_ids "buffered failure preserves entire queue" [ "a"; "keep" ] (ids broker);
+  Unix.unlink archive;
+  ignore (ack broker [ "a" ]);
+  check_ids "repaired archive is retryable" [ "keep" ] (ids broker))
+
+let test_post_rename_recovery ephemeral = fixture (fun _ broker ->
+  B.save_inbox broker ~session_id:sid [ message ~ephemeral "a"; message "keep" ];
+  let inbox = inbox_path broker ~session_id:sid in
+  let child = Unix.fork () in
+  if child = 0 then begin
+    C2c_io.set_fsync_for_test (Some (fun path fd ->
+      (* Terminate the writer at the first sync after the atomic rename. *)
+      if path = inbox then Unix._exit 77 else Unix.fsync fd));
+    ignore (ack broker [ "a" ]);
+    Unix._exit 78
+  end;
+  let _, status = Unix.waitpid [] child in
+  check bool "writer exited between rename and sync" true (status = Unix.WEXITED 77);
+  let reopened = B.create ~root:(B.root broker) in
+  check_ids "rename is visible to new process" [ "keep" ] (ids reopened);
+  C2c_io.set_fsync_for_test (Some (fun path fd ->
+    if path = inbox then raise (Unix.Unix_error (Unix.EIO, "fsync", path));
+    Unix.fsync fd));
+  let failed = try ignore (ack reopened [ "a" ]); false with Unix.Unix_error _ -> true in
+  C2c_io.set_fsync_for_test None;
+  check bool "missing-ID retry still rejects failed durability" true failed;
+  let synced = ref [] in
+  C2c_io.set_fsync_for_test (Some (fun path fd -> synced := path :: !synced; Unix.fsync fd));
+  let acknowledged, missing = ack reopened [ "a" ] in
+  C2c_io.set_fsync_for_test None;
+  check_ids "retry has no duplicate removal" [] acknowledged;
+  check_ids "retry reports missing ID" [ "a" ] missing;
+  check_ids "successful retry completes file and parent sync" [ inbox; B.root broker ] (List.rev !synced);
+  check_ids "surviving mail retained" [ "keep" ] (ids reopened);
+  check_ids "archive respects privacy through process recovery" (if ephemeral then [] else [ "a" ]) (archive_ids reopened))
+
 let () = run "selected inbox ACK" [ "native", [
   test_case "selected, ordered, unique and idempotent" `Quick test_selected_idempotent;
   test_case "ephemeral archive privacy" `Quick test_ephemeral;
@@ -243,4 +359,11 @@ let () = run "selected inbox ACK" [ "native", [
   test_case "archive sync failure preserves restart-safe retry" `Quick test_fsync_failure;
   test_case "durability ordering" `Quick test_durability_order;
   test_case "malformed or duplicate inbox fails closed" `Quick test_untrusted_inbox;
+  test_case "queue errors never echo message contents" `Quick test_error_redaction;
+  test_case "native host bindings refuse raw ACK" `Quick test_native_host;
+  test_case "host publication and ACK serialize" `Quick (fun () -> test_host_publication_race false);
+  test_case "host rebinding and ACK serialize" `Quick (fun () -> test_host_publication_race true);
+  test_case "buffered archive flush failure preserves inbox" `Quick test_buffered_archive_failure;
+  test_case "process exit after rename and missing-ID durability retry" `Quick (fun () -> test_post_rename_recovery false);
+  test_case "ephemeral process recovery preserves privacy" `Quick (fun () -> test_post_rename_recovery true);
 ] ]

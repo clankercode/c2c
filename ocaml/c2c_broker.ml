@@ -1577,7 +1577,16 @@ open C2c_mcp_helpers
       (list_registrations t)
 
   let raw_drain_is_authorized t ~session_id ~drained_by =
-    match t3_service_registration t ~session_id with
+    (* Native host bindings are consumed only through the generation-fenced
+       host transport. Environment flags alone cannot protect their rows. *)
+    let host_owned = List.exists (fun (reg : registration) ->
+      reg.session_id = session_id &&
+      (reg.client_type = Some "host" ||
+       match reg.registered_by with
+       | Some marker -> String.starts_with ~prefix:"host-mailbox:" marker
+       | None -> false)) (list_registrations t) in
+    if host_owned then drained_by = "host-ack"
+    else match t3_service_registration t ~session_id with
     | None -> true
     | Some _ -> drained_by = t3_service_registered_by
 
@@ -3380,7 +3389,11 @@ open C2c_mcp_helpers
                            :: ("session_id", `String session_id) :: fields) in
                         output_string oc (Yojson.Safe.to_string record);
                         output_char oc '\n')
-                      messages));
+                      messages;
+                    (* close_out flushes buffered records and can fail even
+                       when every output_string succeeded. Propagate that
+                       failure before any caller is allowed to remove mail. *)
+                    close_out oc));
 
   type archive_entry =
     { ae_drained_at : float
@@ -3739,8 +3752,16 @@ open C2c_mcp_helpers
                  C2c_io.fsync_file_and_parent (archive_path t ~session_id);
                  C2c_io.fsync_path t.root
                end;
-               save_inbox t ~session_id rest;
-               if durable then C2c_io.fsync_file_and_parent (inbox_path t ~session_id));
+               save_inbox t ~session_id rest);
+          (* A previous attempt may have renamed the inbox but failed its
+             final sync. Even an all-missing retry must complete durability
+             before reporting success. An absent inbox still needs its
+             containing directory synced. *)
+          if durable then begin
+            if Sys.file_exists (inbox_path t ~session_id) then
+              C2c_io.fsync_file_and_parent (inbox_path t ~session_id)
+            else C2c_io.fsync_path t.root
+          end;
           matching)
 
   let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) ?(durable = false) t ~session_id ~pred =

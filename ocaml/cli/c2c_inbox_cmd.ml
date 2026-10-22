@@ -409,7 +409,10 @@ let ack_inbox_cmd =
                  ("missing", `List (List.map (fun id -> `String id) missing)) ])
              else Printf.printf "acknowledged %d; missing %d\n%!"
                (List.length acknowledged) (List.length missing)
-       with exn -> fail (Printexc.to_string exn))
+       (* Parser exceptions can contain raw inbox bodies, including ephemeral
+          mail. Never echo them to stdout/stderr or claim a failed durable
+          write left the queue untouched (the rename may have completed). *)
+       with _ -> fail "unable to acknowledge inbox: queue read or durable update failed")
 
 let peek_inbox_cmd =
   let session_id_flag =
