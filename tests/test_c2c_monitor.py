@@ -13,6 +13,7 @@ Each test:
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,22 @@ INOTIFYWAIT = shutil.which("inotifywait")
 MONITOR_STARTUP_SECONDS = 3.0   # fallback sleep if monitor.ready never arrives
 EVENT_TIMEOUT_SECONDS = 8.0
 READY_TIMEOUT_SECONDS = 12.0    # wait up to 12s for monitor.ready event
+
+
+def _stop_monitor(proc):
+    """Reap only this fixture's process group, including its inotify child."""
+    if getattr(proc, "_c2c_fixture_stopped", False):
+        return
+    proc._c2c_fixture_stopped = True
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
 
 
 def _read_events(proc, stop_event, events_out, timeout=EVENT_TIMEOUT_SECONDS):
@@ -103,7 +120,9 @@ class MonitorJsonTests(unittest.TestCase):
             stderr=subprocess.DEVNULL,
             text=True,
             env=env,
+            start_new_session=True,
         )
+        self.addCleanup(_stop_monitor, proc)
         # Wait for monitor.ready event (emitted once inotifywait is armed),
         # then put it back so _collect_events can see it too if desired.
         # Fall back to a fixed sleep if the ready event never arrives.
@@ -144,8 +163,9 @@ class MonitorJsonTests(unittest.TestCase):
         t.start()
         t.join(timeout + 1)
         stop.set()
-        proc.kill()
-        proc.wait(timeout=5)
+        _stop_monitor(proc)
+        t.join(1)
+        proc.stdout.close()
         return events
 
     def test_peer_alive_on_registry_write(self):
@@ -318,7 +338,9 @@ class MonitorStartupInboxTests(unittest.TestCase):
             stderr=subprocess.DEVNULL,
             text=True,
             env=env,
+            start_new_session=True,
         )
+        self.addCleanup(_stop_monitor, proc)
         if not MonitorJsonTests._wait_for_ready(self, proc):
             time.sleep(MONITOR_STARTUP_SECONDS)
         return proc
