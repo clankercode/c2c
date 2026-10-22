@@ -370,6 +370,45 @@ class RuntimeTests(unittest.TestCase):
         self.ctx.hooks['on_session_start'](session_id='pending', session_key='route-pending')
         self.assertEqual(before, FakeCli.calls)
 
+    def test_finalize_before_pending_registration_fences_start(self):
+        entered, release = threading.Event(), threading.Event()
+        original = os.path.isdir
+        def blocked_isdir(path):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return original(path)
+        before = list(FakeCli.calls)
+        with patch.object(os.path, 'isdir', blocked_isdir), patch.object(broker_watcher.BrokerWatcher, 'start') as start:
+            worker = threading.Thread(target=lambda: self.ctx.hooks['on_session_start'](
+                session_id='early', session_key='route-early'))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.ctx.hooks['on_session_finalize'](session_id='early', session_key='route-early')
+            finally:
+                release.set()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            start.assert_not_called()
+        self.assertIn('error', self.ctx.tools['c2c_send'](
+            {'to': 'peer', 'body': 'forbidden'}, session_id='early'))
+        self.assertIn('error', self.ctx.commands['c2c-poll']('', session_id='early'))
+        self.ctx.hooks['on_session_start'](session_id='early', session_key='route-early')
+        self.assertEqual(before, FakeCli.calls)
+
+    def test_unregistered_finalize_requires_exact_owned_coordinates(self):
+        with self.assertRaises(identity.OwnershipError):
+            self.reg.end(session_id='early')
+        with self.assertRaises(identity.OwnershipError):
+            self.reg.end(session_id='early', session_key='route-early',
+                         profile_home=self.tmp.name + '/foreign')
+        self.assertEqual(self.reg._ended, set())
+        self.reg.end(session_id='early', session_key='route-early')
+        self.reg.end(session_id='early', session_key='route-early')
+        with self.assertRaises(identity.OwnershipError):
+            self.reg.start(session_id='early', session_key='route-early')
+        self.assertTrue(self.a.active)
+
     def test_foreign_ambient_registration_markers_are_scrubbed(self):
         foreign = {'C2C_MCP_AUTO_REGISTER_ALIAS': 'foreign-parent',
                    'C2C_MCP_CLIENT_PID': '1', 'C2C_MCP_SESSION_ID': 'foreign',

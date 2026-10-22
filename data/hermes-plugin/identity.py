@@ -216,15 +216,18 @@ class SessionRegistry:
     def end(self, **invocation):
         sid, key = self._coordinates(**invocation)
         with self._lock:
-            # Finalization must also fence workers still doing registration I/O.
-            # A timed-out on_session_start may finish after the native session
-            # has ended; its coordinates remain invalid for this registry.
-            candidates = self._pending | self._sessions.keys()
-            matches = [slot for slot in candidates
-                       if (not sid or slot[0] == sid) and (not key or slot[1] == key)]
-            if len(matches) != 1:
-                raise OwnershipError("unknown or ambiguous finalized session")
-            slot = matches[0]
+            # Exact host-owned coordinates are authoritative even before a
+            # delayed start worker reaches this registry. Partial coordinates
+            # still require an unambiguous existing binding; never guess one.
+            if sid and key:
+                slot = (sid, key)
+            else:
+                candidates = self._pending | self._sessions.keys() | self._ended
+                matches = [slot for slot in candidates
+                           if (not sid or slot[0] == sid) and (not key or slot[1] == key)]
+                if len(matches) != 1:
+                    raise OwnershipError("unknown or ambiguous finalized session")
+                slot = matches[0]
             self._ended.add(slot)
             session = self._sessions.get(slot)
             if session:
