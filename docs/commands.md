@@ -792,6 +792,15 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `uninstall all` | 2 | Uninstall every component above — including `agy`, `hermes`, and `muse` — in the sweep (clients first, then git pieces, then `self` last). |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | 2 | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. Explicit `-a`/`--alias` that differs from an existing registration for this session_id is refused (sticky alias B135). |
 
+After `c2c install hermes`, the preferred first gateway-formatting check is the
+optional canary shown by setup. It is an example only and is never sent by the
+installer; replace the target with an owned, verified Hermes route before
+running it:
+
+```bash
+c2c send --ephemeral telegram-inbound 'c2c formatting canary -> recipient | queued/offline status | literal <markup> & emoji ✅'
+```
+
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
 
 ### T3 Code connector (Tier 2)

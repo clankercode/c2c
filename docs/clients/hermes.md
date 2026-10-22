@@ -23,8 +23,9 @@ This installs the plugin and skill under the active Hermes home and enables
 `c2c` in `config.yaml` under `plugins.enabled`. Restart Hermes to load the
 plugin. Hermes runs its own loop; there is no `c2c start hermes`.
 
-Setup prints an optional formatting canary command. It is never sent by the
-installer; run it only after choosing and verifying the intended Hermes
+Setup prints an optional formatting canary command. This is the preferred
+first check for gateway formatting and delivery status. It is never sent by
+the installer; run it only after choosing and verifying the intended Hermes
 gateway target:
 
 ```bash
