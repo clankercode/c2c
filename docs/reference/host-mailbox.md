@@ -15,7 +15,7 @@ Usage errors are reported on stderr with a nonzero exit status. Operation errors
 return `{ "schema_version": 1, "error": "<category>" }` with a nonzero exit status.
 
 ```
-c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P] [--expected-broker-root B]
+c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--client-type C] [--broker-root B] [--owner-pid P] [--expected-broker-root B]
 c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
 c2c host send --environment-id E --thread-id T --broker-root B --generation G --to A --content BODY
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
@@ -40,8 +40,18 @@ grammar enforced by `c2c register` and by the T3 host-mailbox protocol. Relay
 addresses such as `name@host-id` are not valid local host aliases; use the
 recipient field for a relay target when sending.
 
+Reserved client namespaces require explicit ownership. To bind an alias such
+as `hermes-telegram-inbound`, pass `--client-type hermes`; the client type must
+be one of the supported harnesses and the alias must use that same prefix.
+Foreign prefixes are rejected with `alias_namespace_mismatch:<client>`.
+Reserved aliases without a namespace are rejected with
+`reserved_alias_requires_client_namespace`. This keeps auto-generated client
+names protected while giving authenticated host integrations an explicit,
+persisted namespace assertion. The namespace is immutable for a logical
+identity and is returned as `binding.client_type`.
+
 Bind returns a `binding` object with `environment_id`, `thread_id`, `session_id`,
-`alias`, `workspace`, `broker_root`, `inbox_path`, opaque `generation`,
+`alias`, optional `client_type`, `workspace`, `broker_root`, `inbox_path`, opaque `generation`,
 `owner_pid`, and `owner_pid_start_time` fields.
 Save that object. Repeating an active bind with the same owner and workspace is
 idempotent; owner, PID generation, or workspace changes renew the generation.

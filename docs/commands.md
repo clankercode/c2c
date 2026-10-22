@@ -1852,6 +1852,9 @@ already-injected messages are not replayed.
 
 Applications that own provider processes can use `c2c host bind`, `peek`, `ack`,
 `send`, and `unbind` to accept durable mail, acknowledge selected message IDs,
-and send with the same ownership fence.
+and send with the same ownership fence. Reserved client aliases require the
+explicit matching `--client-type` namespace on `host bind` (for example,
+`--alias hermes-telegram-inbound --client-type hermes`); foreign prefixes and
+unqualified reserved aliases fail closed.
 See the [host mailbox transport reference](/reference/host-mailbox/) for the
 versioned JSON contract, generation fencing, and source provenance.
