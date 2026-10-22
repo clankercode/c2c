@@ -87,9 +87,15 @@ let stored_of_json broker ~environment_id ~thread_id json =
   if json |> member "schema_version" |> to_int <> 1 then reject "invalid_binding";
   let b = json |> member "binding" in
   let text key = b |> member key |> to_string in
+  let stored_client_type =
+    match b |> member "client_type" with
+    | `Null -> None
+    | `String v -> Some v
+    | _ -> reject "invalid_binding"
+  in
+  let client_type = normalize_client_type stored_client_type in
   let binding = { environment_id = text "environment_id"; thread_id = text "thread_id";
-    session_id = text "session_id"; alias = text "alias";
-    client_type = (match b |> member "client_type" with `Null -> None | `String v -> Some v | _ -> reject "invalid_binding");
+    session_id = text "session_id"; alias = text "alias"; client_type;
     workspace = text "workspace";
     broker_root = text "broker_root"; inbox_path = text "inbox_path";
     generation = text "generation"; owner_pid = b |> member "owner_pid" |> to_int;
@@ -100,7 +106,6 @@ let stored_of_json broker ~environment_id ~thread_id json =
      || binding.generation = ""
      || binding.owner_pid <= 0
   then reject "invalid_binding";
-  let client_type = normalize_client_type binding.client_type in
   validate_alias ?client_type binding.alias;
   let owner_id = json |> member "owner_id" |> to_string in
   require_text "owner_id" owner_id;
