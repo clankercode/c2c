@@ -19,6 +19,9 @@ import unittest
 from unittest.mock import patch
 
 
+@unittest.skipUnless(all(os.environ.get(key) for key in (
+    'C2C_BIN', 'HERMES_SOURCE_ROOT', 'C2C_HERMES_SOURCE', 'C2C_HERMES_FIXTURE_ROOT')),
+    'set the documented isolated native fixture environment')
 class NativeFixture(unittest.TestCase):
     def test_real_manager_routing_and_native_mailbox(self):
         root = Path(os.environ['C2C_HERMES_FIXTURE_ROOT']).resolve(strict=True)
@@ -117,7 +120,8 @@ class NativeFixture(unittest.TestCase):
                     with scope('native-A', 'route-A'):
                         result = invoke_plugin_command(manager._plugin_commands['c2c-send']['handler'],
                                                        b.binding.alias + ' command-data', session_id='native-A', session_key='route-A', platform='tui')
-                    self.assertNotIn('error', json.loads(result))
+                    self.assertIn(a.binding.alias + ' -> ' + b.binding.alias, result)
+                    self.assertIn('| command-data', result)
                     self.assertEqual(len(mail(b)), 1)
                     hook('on_session_finalize')
                     self.assertFalse(a.active)

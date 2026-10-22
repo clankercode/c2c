@@ -24,6 +24,10 @@ or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
 ## v0.19.0 — 2026-10-23
 
+### Hermes: literal message cards in the TUI and CLI
+summary: Native and MCP sends and inbox data now show sender, recipient, honest queue status and a literal body in Hermes TUI/CLI cards, with plain text when ANSI is unavailable. Queued never confirms recipient delivery; the companion Telegram adapter shares these semantics while retaining native entities (docs/clients/hermes.md).
+clients: hermes
+
 ### Hermes: plugin-first setup and optional isolated MCP tools
 summary: Install the Hermes plugin without requiring MCP, or opt into MCP tools with a connection-owned identity. Native delivery binds the exact session/profile and selectively acknowledges only accepted DATA; wake remains conditional on explicit injection consent and a verified host target.
 setup: c2c install hermes --with-mcp

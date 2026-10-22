@@ -11,6 +11,13 @@ are verbatim from source; do not paraphrase.
 
 ## Broker / MCP Session
 
+### `C2C_HERMES_PLAIN`
+
+Set to `1` in the Hermes process environment to disable ANSI color in native
+c2c message cards. Non-TTY output, `TERM=dumb`, and the presence of `NO_COLOR`
+also select plain text. This affects presentation only, never message data,
+queue status, model envelopes, or acknowledgement behavior.
+
 ### `C2C_MCP_BROKER_ROOT`
 
 Broker root resolution order (2026-07-06, #9 split-brain fix; was coord1 2026-04-26):

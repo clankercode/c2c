@@ -58,6 +58,9 @@ class Session:
         self.binding = binding
         self.cli = cli
         self.ctx = ctx
+        # None records a gateway owner; a classic CLI retains its exact object.
+        # Matching session ids cannot authorize a replacement or a later takeover.
+        self._cli_owner = ctx._manager._cli_ref
         self.active = True
         self.delivery = Delivery(self)
         self.watcher = None
@@ -69,10 +72,12 @@ class Session:
             if str(Path(manager.home_path).resolve()) != self.binding.profile_home:
                 return False
             cli = manager._cli_ref
+            if cli is not self._cli_owner:
+                return False
             if cli is not None:
                 return (self.binding.surface == "cli"
                         and getattr(cli, "session_id", None) == self.binding.session_id)
-            return self.binding.surface in ("tui", "desktop")
+            return self.binding.surface in ("cli", "tui", "desktop")
         except Exception:
             return False
 

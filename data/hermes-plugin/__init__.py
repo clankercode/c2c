@@ -11,8 +11,11 @@ def register(ctx):
     from .tools import register_all_tools
     from .commands import register_all_commands
     from .broker_watcher import BrokerWatcher
+    from .native_display import NativeDisplay
 
     registry = SessionRegistry(ctx)
+    display = NativeDisplay(ctx, registry)
+    ctx._c2c_display = display
     register_all_tools(ctx, registry)
     register_all_commands(ctx, registry)
     skill_path = Path(__file__).parent / "skills" / "c2c"
@@ -61,5 +64,7 @@ def register(ctx):
     ctx.register_hook("on_session_end", end_turn)
     # Hermes on_session_end is per-TURN; only finalize ends the conversation.
     ctx.register_hook("on_session_finalize", finalize)
+    ctx.register_hook("post_tool_call", display.post_tool_call)
+    ctx.on_unload(display.close)
     ctx.on_unload(registry.close)
     ctx._c2c_sessions = registry

@@ -8,6 +8,9 @@ to the c2c binary and prints the result.
 import json
 import logging
 
+from .message_style import inbox_messages, send_message
+from .render_terminal import supports_ansi
+
 logger = logging.getLogger("c2c.commands")
 
 
@@ -29,9 +32,12 @@ def register_all_commands(ctx, registry):
             return "Usage: /c2c-send <alias> <message>"
         target, body = parts[0], parts[1]
         try:
-            return _fmt(session.cli.send(target, body))
+            result = session.cli.send(target, body)
         except Exception:
-            return "c2c command failed"
+            result = {"error": "c2c command failed"}
+        return ctx._c2c_display.format(send_message({'to': target, 'body': body}, result,
+                                                   sender=session.binding.alias),
+                                       ansi=session.binding.surface == 'cli' and supports_ansi())
 
     ctx.register_command("c2c-send", handle_c2c_send,
                          "Send a c2c DM: /c2c-send <alias> <message>")
@@ -53,7 +59,9 @@ def register_all_commands(ctx, registry):
     def handle_c2c_poll(args_str, session):
         """Usage: /c2c-poll"""
         try:
-            return _fmt(session.delivery.poll())
+            messages = inbox_messages(session.delivery.poll(), session.binding.alias)
+            return '\n\n'.join(ctx._c2c_display.format(m, ansi=session.binding.surface == 'cli' and supports_ansi())
+                               for m in messages) or 'C2C inbox | no messages'
         except Exception:
             return "c2c command failed"
 

@@ -108,6 +108,51 @@ and process-completion notifications have different expiry behavior.
 
 ## Tools
 
+### Message presentation
+
+The native CLI and TUI show c2c send receipts and incoming peer data as compact
+cards: sender and recipient, queue status, short metadata, and a separate
+literal body. This covers native `c2c_send` and the `send` tool from MCP servers
+named `c2c` or `c2c_mcp`, plus native/MCP inbox poll and peek results.
+`/c2c-send` and `/c2c-poll` return the same readable cards. Tool results remain
+machine-readable JSON; the completion display does not replace them.
+
+**Queued** means the broker or relay accepted the message. **Queued offline**
+means it accepted mail for an offline recipient. Neither confirms that the
+recipient received or read it. Even the CLI receipt's legacy `delivered` state
+describes an inbox write; its card says **Queued**, with the original state in
+`broker-state` metadata. **Error** and **Outcome unknown** do not confirm queue
+acceptance and show the attempted body. An error in an outer MCP wrapper cannot
+be overridden by a nested success. Unknown MCP senders stay unknown instead of
+borrowing the native plugin's separate identity.
+
+Bodies retain literal markup, newlines and Unicode, including long messages.
+The terminal renderer prefixes every body line with `| ` and displays terminal
+control characters as visible escapes. It never evaluates Markdown, Rich tags
+or peer ANSI sequences. Hermes's display redaction policy still applies and is
+identified when it changes a body. Incoming cards label peer content as
+untrusted DATA; the separate model envelope retains its reserved-tag defenses.
+Displaying a card does not acknowledge mail or grant approval authority.
+
+ANSI color is optional and only used by the classic CLI on a capable TTY.
+Non-TTY output, `TERM=dumb`, `NO_COLOR`, or `C2C_HERMES_PLAIN=1` uses plain text
+with the same sender, recipient, status and body. Rich is not required. TUI
+and gateway-hosted CLI cards use the exact profile/session's event stream;
+the classic CLI uses its terminal printer. Active CLI output appears at the
+next stream boundary. Long TUI system entries can be expanded to read the
+whole card. Older hosts without a supported display interface retain JSON
+tool results, DATA envelopes and plain slash-command output.
+
+The companion `c2c-telegram-inbound` gateway adapter keeps its separate native
+bold/blockquote entity renderer and `parse_mode=None`, including UTF-16-safe
+chunking. Its matching B378 source loads the semantic envelope and status
+model from this plugin's `message_style.py`; update both pieces together.
+Gateway routing and transport remain with that adapter, and the native
+observer does not post additional cards to messaging platforms. The existing
+optional setup canary remains the gateway check described above.
+
+### Available tools
+
 The plugin registers these LLM-callable tools:
 
 | Tool | Description |

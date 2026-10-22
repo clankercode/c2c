@@ -161,6 +161,9 @@ codegen-hermes-plugin:
             commands.py \
             broker_watcher.py \
             delivery.py \
+            message_style.py \
+            render_terminal.py \
+            native_display.py \
             skills/c2c/SKILL.md
         do
             src="$src_dir/$f"
