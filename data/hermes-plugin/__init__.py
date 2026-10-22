@@ -31,7 +31,7 @@ def register(ctx):
     def pre_llm_call(**kwargs):
         try:
             # First-turn mail follows the same synchronous acceptance path.
-            body = registry.resolve(**kwargs).delivery.context()
+            body = registry.resolve(**kwargs).delivery.context(kwargs.get("turn_id"))
             return {"context": body} if body else None
         except Exception:
             return None
@@ -42,8 +42,23 @@ def register(ctx):
         except Exception:
             pass
 
+    def pre_api_request(**kwargs):
+        try:
+            registry.resolve(**kwargs).delivery.confirm_context(
+                kwargs.get("turn_id"), kwargs.get("request_messages"))
+        except Exception:
+            pass
+
+    def end_turn(**kwargs):
+        try:
+            registry.resolve(**kwargs).delivery.end_turn(kwargs.get("turn_id"))
+        except Exception:
+            pass
+
     ctx.register_hook("on_session_start", start)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("pre_api_request", pre_api_request)
+    ctx.register_hook("on_session_end", end_turn)
     # Hermes on_session_end is per-TURN; only finalize ends the conversation.
     ctx.register_hook("on_session_finalize", finalize)
     ctx.on_unload(registry.close)

@@ -30,6 +30,14 @@ def _bound_key():
         return ""
 
 
+def _bound_home():
+    try:
+        from hermes_constants import get_hermes_home_override
+        return get_hermes_home_override()
+    except ImportError:
+        return None
+
+
 @dataclass(frozen=True)
 class Binding:
     profile_home: str
@@ -77,17 +85,24 @@ class SessionRegistry:
         manager = getattr(ctx, "_manager", None)
         home = getattr(manager, "home_path", None)
         self.home = str(Path(home).resolve()) if home else ""
-        snapshot = dict(os.environ)
+        # Generic c2c launcher markers may describe the parent Codex/Claude
+        # process. Only transport/storage preferences cross this boundary.
+        allowed = {"C2C_BIN", "C2C_STATE_HOME", "C2C_MCP_AUTO_JOIN_ROOMS", "C2C_HERMES_BROKER_ROOT"}
+        snapshot = {k: v for k, v in os.environ.items() if not k.startswith("C2C_") or k in allowed}
         if self.home:
             snapshot["HERMES_HOME"] = self.home
         self.env = MappingProxyType(snapshot)
         self._sessions = {}
         self._pending = set()
         self._lock = threading.Lock()
+        self._closed = False
 
     def _coordinates(self, *, session_id=None, session_key=None, profile_home=None, **kwargs):
         if not self.home:
             raise OwnershipError("Hermes manager profile home is required")
+        home = _bound_home()
+        if home is not None and str(Path(home).resolve()) != self.home:
+            raise OwnershipError("invocation belongs to a different runtime profile")
         manager_home = getattr(getattr(self.ctx, "_manager", None), "home_path", None)
         if not manager_home or str(Path(manager_home).resolve()) != self.home:
             raise OwnershipError("Hermes profile owner changed")
@@ -133,6 +148,8 @@ class SessionRegistry:
             raise OwnershipError("session working directory is required")
         slot = (sid, key)
         with self._lock:
+            if self._closed:
+                raise OwnershipError("plugin was unloaded")
             existing = self._sessions.get(slot)
             if existing:
                 if not existing.active or existing.binding.cwd != os.path.realpath(cwd):
@@ -147,11 +164,17 @@ class SessionRegistry:
             frame = "".join(f"{len(v)}:{v}" for v in (self.home, sid, key))
             broker_sid = "hermes-" + hashlib.sha256(frame.encode()).hexdigest()[:32]
             env = dict(self.env)
-            env.update(C2C_MCP_SESSION_ID=broker_sid, C2C_MCP_CLIENT_TYPE="hermes")
-            alias = env.get("C2C_MCP_AUTO_REGISTER_ALIAS")
-            if not alias:
-                env["C2C_MCP_AUTO_REGISTER_ALIAS"] = broker_sid
-                env["C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"] = "1"
+            env.update(C2C_MCP_SESSION_ID=broker_sid, C2C_MCP_CLIENT_TYPE="hermes",
+                       C2C_MCP_CLIENT_PID=str(os.getpid()),
+                       C2C_MCP_AUTO_REGISTER_ALIAS=broker_sid,
+                       C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN="1")
+            # A Hermes-specific operator override is explicit; never borrow a
+            # generic managed launcher's broker root from another workspace.
+            override = env.get("C2C_HERMES_BROKER_ROOT")
+            if override:
+                if not os.path.isabs(override):
+                    raise OwnershipError("Hermes broker override must be absolute")
+                env["C2C_MCP_BROKER_ROOT"] = override
             cli = C2cCli(env=env, cwd=cwd)
             root = cli.broker_root()
             if not root or not os.path.isabs(root):
@@ -172,6 +195,8 @@ class SessionRegistry:
                               os.path.realpath(cwd), surface)
             session = Session(binding, cli, self.ctx)
             with self._lock:
+                if self._closed:
+                    raise OwnershipError("plugin unloaded during registration")
                 self._sessions[slot] = session
             # Room membership belongs to this immutable binding too.
             for room in env.get("C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge").split(","):
@@ -194,6 +219,7 @@ class SessionRegistry:
     def close(self):
         """Plugin unload invalidates all old callbacks and watcher bindings."""
         with self._lock:
+            self._closed = True
             sessions = list(self._sessions.values())
         for session in sessions:
             session.delivery.close()

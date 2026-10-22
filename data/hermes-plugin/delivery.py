@@ -6,6 +6,8 @@ B098: envelopes carry peer DATA and never confer approval authority.
 import logging
 import re
 import threading
+import uuid
+from collections import deque
 
 logger = logging.getLogger("c2c.delivery")
 
@@ -86,6 +88,8 @@ class Delivery:
         self._lock = threading.Lock()
         self._inflight = False
         self._accepted = set()
+        self._provisional = None
+        self._finished_turns = deque(maxlen=128)
 
     def close(self):
         with self._lock:
@@ -107,16 +111,19 @@ class Delivery:
             return self.session.active and self.session.owned()
 
     def _ack(self):
-        if not self._accepted or not self._active():
+        with self._lock:
+            selected = sorted(self._accepted)[:64]
+        if not selected or not self._active():
             return
         try:
-            result = self.session.cli.ack_inbox(sorted(self._accepted))
+            result = self.session.cli.ack_inbox(selected)
             if isinstance(result, dict) and result.get("ok") is True:
                 acknowledged = result.get("acknowledged")
                 missing = result.get("missing")
                 if (isinstance(acknowledged, list) and isinstance(missing, list)
                         and all(isinstance(i, str) for i in acknowledged + missing)):
-                    self._accepted.difference_update(acknowledged + missing)
+                    with self._lock:
+                        self._accepted.difference_update(set(selected) & set(acknowledged + missing))
         except Exception:
             # No exception text: CLI/host exceptions can contain private bodies.
             logger.warning("[c2c] selected ACK failed; broker mail retained for retry")
@@ -131,21 +138,32 @@ class Delivery:
                 result = result.get("messages", [])
         return result if isinstance(result, list) else []
 
-    def _deliver(self, accept):
+    def _deliver(self, accept, *, context_turn=None):
         if not self._reserve():
             return []
         try:
             if not self._active():
                 return []
+            with self._lock:
+                if context_turn is not None:
+                    if context_turn in self._finished_turns:
+                        return []
+                    if self._provisional is not None:
+                        if self._provisional[0] == context_turn:
+                            return []
+                        self._provisional = None
             self._ack()
             peeked = self._messages(self.session.cli.peek_inbox())
             batch, ids = [], set()
+            with self._lock:
+                pending = set(self._provisional[2]) if self._provisional else set()
+                pending.update(self._accepted)
             for msg in peeked:
                 if not isinstance(msg, dict):
                     continue
                 mid = msg.get("message_id") or msg.get("id") or msg.get("msg_id")
                 # Do not invent IDs or fall back to a destructive poll for old mail.
-                if not isinstance(mid, str) or not mid or mid in ids or mid in self._accepted:
+                if not isinstance(mid, str) or not mid or mid in ids or mid in pending:
                     continue
                 ids.add(mid)
                 batch.append(msg)
@@ -155,8 +173,10 @@ class Delivery:
                 return []
             if not accept(batch):
                 return []
-            self._accepted.update(ids)
-            self._ack()
+            if context_turn is None:
+                with self._lock:
+                    self._accepted.update(ids)
+                self._ack()
             return batch
         except Exception:
             logger.warning("[c2c] delivery failed; unaccepted mail remains in broker")
@@ -181,16 +201,64 @@ class Delivery:
             return bool(ctx.inject_message(body, role="user", session_key=binding.session_key))
         return len(self._deliver(accept))
 
-    def context(self):
+    def context(self, turn_id=None):
+        # Installed Hermes supplies turn_id to both pre-LLM and pre-API hooks.
+        # An older/unknown contract cannot prove hook output acceptance.
+        if not isinstance(turn_id, str) or not turn_id:
+            return None
         consent = getattr(self.session.ctx, "_gateway_injection_allowed", None)
         if not callable(consent) or consent() is not True or not self._active():
             return None
         text = []
         def accept(batch):
-            text.append("\n\n".join(format_envelope(m, self.session.binding.alias) for m in batch))
+            body = "\n\n".join(format_envelope(m, self.session.binding.alias) for m in batch)
+            body = body.replace('<c2c event=', f'<c2c delivery_receipt="{uuid.uuid4().hex}" event=', 1)
+            ids = {m.get("message_id") or m.get("id") or m.get("msg_id") for m in batch}
+            with self._lock:
+                if turn_id in self._finished_turns:
+                    return False
+                self._provisional = (turn_id, body, ids)
+            text.append(body)
             return True
-        self._deliver(accept)
+        self._deliver(accept, context_turn=turn_id)
         return text[0] if text else None
+
+    def confirm_context(self, turn_id, request_messages):
+        """ACK only after Hermes includes the exact fresh context in a request.
+
+        Bounded pre-LLM hooks can be abandoned while their worker continues.
+        Constructing a return value is therefore not an acceptance receipt.
+        pre_api_request exposes the actual request_messages on the same turn.
+        A missing body releases the provisional reservation without ACK.
+        """
+        with self._lock:
+            self._finished_turns.append(turn_id)
+            staged = self._provisional
+            if not staged or staged[0] != turn_id or not self.session.active:
+                return
+            def contains(value):
+                if isinstance(value, str):
+                    return staged[1] in value
+                if isinstance(value, list):
+                    return any(contains(v) for v in value)
+                if isinstance(value, dict):
+                    return any(contains(v) for v in value.values())
+                return False
+            if isinstance(request_messages, list) and contains(request_messages):
+                self._accepted.update(staged[2])
+            self._provisional = None
+        if self._reserve():
+            try:
+                self._ack()
+            finally:
+                self._release()
+
+    def end_turn(self, turn_id):
+        """Release abandoned context; late pre-LLM workers cannot restage it."""
+        with self._lock:
+            self._finished_turns.append(turn_id)
+            if self._provisional and self._provisional[0] == turn_id:
+                self._provisional = None
 
     def poll(self):
         """Explicit tools/commands share the same reservation as auto-delivery."""
