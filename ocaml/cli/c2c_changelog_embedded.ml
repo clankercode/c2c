@@ -24,6 +24,10 @@ or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
 ## v0.19.0 — 2026-10-23
 
+### Hermes distribution: canonical skill and read-only drift gate
+summary: 2026-10-23: Fold Hermes guidance into data/hermes-plugin/skills/c2c/SKILL.md and run just check-hermes-distribution before shipping; canonical-to-embed/install ownership and the companion's silent-all-chunks Telegram contract are documented in .collab/runbooks/hermes-distribution.md.
+clients: hermes
+
 ### Hermes: literal message cards in the TUI and CLI
 summary: Native and MCP sends and inbox data now show sender, recipient, honest queue status and a literal body in Hermes TUI/CLI cards, with plain text when ANSI is unavailable. Queued never confirms recipient delivery; the companion Telegram adapter shares these semantics while retaining native entities (docs/clients/hermes.md).
 clients: hermes

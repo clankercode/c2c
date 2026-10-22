@@ -21,6 +21,17 @@ def combined_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 class JustfileTests(unittest.TestCase):
+    def test_check_runs_read_only_hermes_gate_before_build(self):
+        result = just_dry_run("check")
+        output = combined_output(result)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(output.index('just check-hermes-distribution'),
+                        output.index('scripts/dune-build-locked.sh build'))
+        gate = just_dry_run('check-hermes-distribution')
+        self.assertEqual(gate.returncode, 0, gate.stderr)
+        self.assertIn('tools/ci/check-hermes-distribution.py', combined_output(gate))
+        self.assertNotIn('codegen-hermes-plugin', combined_output(gate))
+
     def test_test_py_exposes_deprecated_compatibility_modules(self):
         result = just_dry_run("test-py")
         output = combined_output(result)

@@ -106,6 +106,19 @@ bounded completion-notification adapter and explicit rearm. Generic Claude
 `Monitor(...)` examples are not Hermes terminal recipes. Pattern notifications
 and process-completion notifications have different expiry behavior.
 
+## Distribution maintenance
+
+The canonical Hermes skill is `data/hermes-plugin/skills/c2c/SKILL.md`, bundled
+inside the plugin rather than the generic assembled c2c skill. Maintainers
+must regenerate with `just codegen-hermes-plugin` and run
+`just check-hermes-distribution`; a copied installation requires a rebuild
+and `c2c install hermes` for the intended profile before host reload. Updating
+the CLI alone does not refresh an installed plugin. The Telegram companion
+owns its transport separately and must set `disable_notification=True` for
+every inbound and outbound card chunk without changing ordinary chat settings.
+Maintainer ownership and audit workflow:
+[Hermes distribution runbook](https://github.com/clankercode/c2c/blob/master/.collab/runbooks/hermes-distribution.md).
+
 ## Tools
 
 ### Message presentation

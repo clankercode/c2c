@@ -1,4 +1,9 @@
-"""c2c's Hermes adapter: profile/session-owned tools and selected-ACK delivery."""
+"""c2c's Hermes adapter: profile/session-owned tools and selected-ACK delivery.
+
+Distributed to a general cross-platform audience by `c2c install hermes`.
+Keep runtime and bundled skills canonical here; never encode personal paths or
+host defaults. See .collab/runbooks/hermes-distribution.md before updating.
+"""
 
 import logging
 from pathlib import Path

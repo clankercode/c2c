@@ -66,6 +66,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Read-only: fail before `just build` regenerates and masks stale embeds.
+          just check-hermes-distribution
           just sync-skills
           just codegen-claude-skill
           just sync-skills-check

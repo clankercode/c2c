@@ -197,6 +197,11 @@ codegen-hermes-plugin:
     } > "$out.tmp"
     mv -f "$out.tmp" "$out"
 
+# Read-only gate; runs before build codegen can hide stale committed output.
+check-hermes-distribution:
+    python3 tools/ci/check-hermes-distribution.py
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_hermes_distribution
+
 # Assemble per-harness c2c skills from .collab/skills/c2c-src/ snippets and
 # embed default (claude/codex) + grok + agy + kimi + muse into
 # ocaml/cli/*_skill_embedded.ml. Edit c2c-src/harness + fragments, then run
@@ -487,6 +492,7 @@ test-slice *SLICES:
 
 check:
     git diff --check
+    just check-hermes-distribution
     just test-relay-supervisor
     just sync-skills
     just codegen-claude-skill
