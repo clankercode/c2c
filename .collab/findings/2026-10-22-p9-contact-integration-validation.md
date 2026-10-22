@@ -61,16 +61,33 @@ Preserved metadata receipts on the coordinator are under
 ## Remaining live gates
 
 Independent source reviews passed for the contact integration and final
-monitor-fixture cleanup. Extra two-host contact validation and an isolated
-NAS30435 Debian canary are still in progress. Intermediate proof-driver
-failures are preserved and are not PASS receipts. Production NAS30434 and
-machine-wide relay configuration remain outside these fixtures.
+monitor-fixture cleanup. The actual x-p35 to x-tuf contact proof passed in
+both directions, including normal sends/replies, explicit-ID duplicates,
+wrong-sender rejection, response-loss/restart, rotation and revocation. Its
+21 signed requests produced eight inbox effects, four duplicate receipts,
+two native relay restarts, zero rate limits/fallbacks/takeovers, and successful
+cleanup/stability checks. Final receipt:
+`/home/xertrov/.cache/c2c/p9/b8c42376-two-host-contact-r12.json`.
+The parent verified its script, original manifest and all-eight-artifact hashes.
+The temporary destination-restricted SSH agent was emptied and terminated;
+no private key was copied and no authorized-keys file was changed.
+
+The final independent proof rereview passed after process-wide non-raising
+signal handlers and a diagnostic-cleanup fallback were added. A fresh r12
+run then passed with the final script hashes. The isolated NAS30435 Debian
+canary remains in progress. Intermediate proof-driver failures are preserved and are
+not PASS receipts. Production NAS30434 and machine-wide relay configuration
+remain outside these fixtures.
 
 P9.M2.E1.T003 still requires the actual public-relay T3 proof through
 `https://relay.c2c.im`; isolated/NAS contact proofs cannot replace it. At
 11:11 UTC production still reported `a0b52e4`. Railway's live status page
 reported the ongoing platform incident and deployment delays. The authorized
 master push starts the automatic rollout; it does not prove rollout success.
+GitHub CI `39768431737`, Docker smoke `39768431878`, and Pages
+`39768430935` all passed for b8. A read-only Railway CLI status probe returned
+unauthorized; no login or manual deployment was performed or required for the
+existing push-triggered rollout.
 P9.M2.E1.T004 remains dependent on T003 completion.
 
 B369/B370 remain open until their required live canary and two-host evidence
