@@ -3212,6 +3212,14 @@ let merge_hermes_config ~dry_run ~config_path =
 let hermes_mcp_recommendation =
   "Recommended: c2c install hermes --with-mcp for structured MCP tools (explicit opt-in)."
 
+(* A formatting canary is deliberately a suggestion, not an installer action.
+   Sending peer data is an operator decision, and the target may be a local
+   host mailbox or a separately maintained gateway integration. Keep the body
+   literal so it exercises sender/recipient metadata, markup boundaries,
+   Unicode and status rendering without asking the installer to guess a route. *)
+let hermes_gateway_canary_recommendation =
+  "Optional formatting canary (never sent by setup): c2c send --ephemeral telegram-inbound 'c2c formatting canary -> recipient | queued/offline status | literal <markup> & emoji \226\156\133' -- replace telegram-inbound with an owned, verified Hermes target."
+
 let merge_hermes_mcp ~dry_run ~config_path ~server_path ~broker_root_opt =
   let broker_root_opt = Option.map (fun root ->
     if Filename.is_relative root then Sys.getcwd () // root else root) broker_root_opt in
@@ -3302,6 +3310,7 @@ let setup_hermes ~with_mcp ~server_path ~broker_root_opt ~output_mode ~dry_run ~
     ; ("mcp", `Bool mcp_configured)
       ; ("mcp_requested", `Bool with_mcp)
       ; ("mcp_recommendation", `String hermes_mcp_recommendation)
+      ; ("gateway_canary_recommendation", `String hermes_gateway_canary_recommendation)
       ; ("mcp_identity", `String mcp_identity)
     ; ("receive", `String "plugin")
     ; ("alias", `String alias_val)
@@ -3326,6 +3335,7 @@ let setup_hermes ~with_mcp ~server_path ~broker_root_opt ~output_mode ~dry_run ~
        Printf.printf "Installed c2c for Hermes (plugin + skill; MCP %s).\n"
            (if mcp_configured then "configured" else "not configured");
          Printf.printf "  %s\n" hermes_mcp_recommendation;
+         Printf.printf "  %s\n" hermes_gateway_canary_recommendation;
          if mcp_configured then Printf.printf "  MCP identity: %s.\n" mcp_identity
          else Printf.printf "  The opt-in installs a separate connection-owned identity, potentially shared across conversations.\n";
          Printf.printf "  MCP tools do not enable inbound wake or grant injection consent.\n";

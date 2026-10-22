@@ -769,6 +769,11 @@ let test_mcp_installer_opt_in_and_identity () =
         (C2c_hermes_config.mcp_configured (read_file (config_path home)));
       check bool "recommendation returned" true
         (List.mem_assoc "mcp_recommendation" default.C2c_setup.extra_json);
+      check bool "formatting canary recommendation returned" true
+        (List.mem_assoc "gateway_canary_recommendation" default.C2c_setup.extra_json);
+      check bool "formatting canary is not sent by setup" true
+        (List.assoc "gateway_canary_recommendation" default.C2c_setup.extra_json
+         = `String C2c_setup.hermes_gateway_canary_recommendation);
       let run () = C2c_setup.setup_hermes ~with_mcp:true
         ~server_path:"/opt/c2c-mcp-server" ~broker_root_opt:None
         ~output_mode:C2c_types.Json ~dry_run:false ~root:"/installer/root"
@@ -861,7 +866,9 @@ let test_mcp_human_recommendation () =
     List.iter (fun expected -> check bool expected true
       (try ignore (Str.search_forward (Str.regexp_string expected) out 0); true with Not_found -> false))
       [ "Recommended: c2c install hermes --with-mcp"; "explicit opt-in"
-      ; "separate connection-owned identity"; "do not enable inbound wake or grant injection consent" ])
+      ; "separate connection-owned identity"; "do not enable inbound wake or grant injection consent"
+      ; "Optional formatting canary (never sent by setup)"
+      ; "literal <markup> & emoji" ])
 
 let () =
   run "c2c_setup_hermes"

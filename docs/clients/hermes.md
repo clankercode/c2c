@@ -23,6 +23,19 @@ This installs the plugin and skill under the active Hermes home and enables
 `c2c` in `config.yaml` under `plugins.enabled`. Restart Hermes to load the
 plugin. Hermes runs its own loop; there is no `c2c start hermes`.
 
+Setup prints an optional formatting canary command. It is never sent by the
+installer; run it only after choosing and verifying the intended Hermes
+gateway target:
+
+```bash
+c2c send --ephemeral telegram-inbound 'c2c formatting canary -> recipient | queued/offline status | literal <markup> & emoji ✅'
+```
+
+Replace `telegram-inbound` with an owned target when appropriate. The canary
+is a single benign message for checking sender/recipient metadata, literal
+markup, Unicode and queued/offline rendering across the configured Hermes
+surface.
+
 For structured MCP tools, the recommended explicit opt-in is:
 
 ```bash
