@@ -1,0 +1,36 @@
+---
+claimed_at: "2026-10-22T08:45:35Z"
+claimed_by: codex-stream-vernal-3h9d
+completed_at: null
+complexity: high
+created_at: "2026-10-22T08:10:36Z"
+depends_on: []
+estimate_hours: 8
+id: B369
+priority: high
+started_at: "2026-10-22T08:45:35Z"
+status: in_progress
+tags: []
+title: Explicit LAN HTTP opt-in for relay contact delivery without disabling authentication
+updated_at: "2026-10-22T08:45:35Z"
+---
+## User-requested change
+Allow explicitly configuring a relay to accept HTTP contact-grant delivery for trusted LAN environments. Default remains HTTPS/confidential transport required. This is a deliberate transport-policy exception, not tokenless dev mode and not a reason to weaken recipient consent.
+
+## Reproduction / evidence
+NAS relay http://c2c.lan:30434 runs upstream v0.18.2 with SQLite, admin token and signed peers. /contact/v1/deliver currently rejects HTTP even for valid grants. Spoofing forwarded-proto is not an acceptable workaround. Existing policy is documented in B265/B266.
+
+## Acceptance
+- Add explicit server-side LAN HTTP opt-in with documented configuration/CLI precedence; no automatic RFC1918 detection or silent fallback.
+- Clients require their own explicit allowance before sending reusable grants over HTTP. Coordinate with the contact-client support bug; the draft contact deliver client currently refuses HTTP.
+- Preserve signed identity, recipient-issued sender-bound grants, expiry/revocation, idempotency, admission checks and uniform denial; changing transport policy alone never permits unsolicited DMs.
+- Health/doctor/startup clearly advertise plaintext exception and avoid unconditional confidentiality/security claims. Document LAN eavesdropping/MITM risk and bind-scope expectations.
+- Tests: default rejection, opt-in success, disabled/revoked/expired/wrong-sender denial, no forwarded-header bypass, config precedence, retries/restart, client default refusal.
+- Isolated NAS canary plus real two-host proof; preserve production data and unrelated agents.
+
+## Scope / references
+Separate from P9 T3 final-public-relay gate; optional NAS fixture is not a substitute for P9.M2.E1.T003 public proof.
+Deployment docs: lan-swarm operations/c2c-relay-nas.md and operations/c2c-relay-dev-nas.md.
+Planning only: no implementation or policy weakening authorized by this ticket capture.
+
+Execution decision (2026-10-22): user explicitly authorized implementation. One serial integration lane with B370 because relay configuration, CLI and connector files overlap. Implement explicit server and client LAN HTTP exceptions with HTTPS defaults and signed sender/recipient consent intact; no production relay settings changed for NAS testing. Validate against own NAS dev fixture and two hosts, preserving production data.

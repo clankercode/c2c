@@ -28,7 +28,7 @@ stats:
     blocked: 1
     done: 10
     in_progress: 0
-    pending: 0
-    total_tasks: 11
+    pending: 1
+    total_tasks: 12
 status: pending
 weeks: 3

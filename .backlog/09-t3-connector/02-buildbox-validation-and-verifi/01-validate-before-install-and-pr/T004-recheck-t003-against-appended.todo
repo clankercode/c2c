@@ -1,0 +1,27 @@
+---
+complexity: medium
+created_at: "2026-10-22T08:19:54Z"
+depends_on:
+    - P9.M2.E1.T003
+estimate_hours: 2
+id: P9.M2.E1.T004
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Recheck T003 against appended NAS relay and contact-client coordination requirements
+updated_at: "2026-10-22T08:19:54Z"
+---
+## Purpose
+T003 may already have been claimed or underway when its body was appended with the NAS dogfood coordination note for B369/B370. Independently recheck the final T003 result against that update rather than assuming its executing agent saw it.
+
+## Required review
+- Read the complete current P9.M2.E1.T003 including the NAS dogfood follow-up, its final evidence/receipts, and B369/B370.
+- Verify the update was explicitly considered: generic grant-aware send/connector changes are coordinated in one serial integration lane, and the existing draft contact-deliver-client commit is accounted for if relevant.
+- Confirm NAS/private-relay tests were not substituted for T003 required production public-relay proof, and that changed source/generated artifacts invalidate old exact-source build/install receipts as specified.
+- Record which B369/B370 changes actually landed before the reviewed candidate and which remain pending; do not require unrelated pending bugs to complete just to close this review.
+- If T003 missed the appended requirements or its completion claims exceed evidence, report precise gaps and reopen/create scoped follow-up work without discarding valid earlier evidence or touching unrelated live agents.
+
+## Acceptance
+A review receipt explicitly cites the appended note, exact T003 candidate/source identity and relevant validation evidence, gives PASS or concrete gaps, and records any corrective backlog IDs. Task existence is not proof T003 was rechecked. Preserve existing T003 claims/history; perform this follow-up after T003 completion.

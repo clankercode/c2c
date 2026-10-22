@@ -9,8 +9,8 @@ stats:
     blocked: 1
     done: 2
     in_progress: 0
-    pending: 0
-    total: 3
+    pending: 1
+    total: 4
 status: pending
 tasks:
     - complexity: high
@@ -43,3 +43,12 @@ tasks:
       status: blocked
       tags: []
       title: Prove two-host delivery recovery and publish operator documentation
+    - complexity: medium
+      depends_on:
+        - P9.M2.E1.T003
+      estimate_hours: 2
+      file: T004-recheck-t003-against-appended.todo
+      id: T004
+      priority: high
+      status: pending
+      title: Recheck T003 against appended NAS relay and contact-client coordination requirements

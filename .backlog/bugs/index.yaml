@@ -365,3 +365,5 @@ bugs:
     - file: B366-adopt-vanilla-codex-sessions-w.todo
     - file: B367-relay-supervisor-waitpid-eintr.todo
     - file: B368-t3-sqlite-arraybuffer-binding.todo
+    - file: B369-explicit-lan-http-opt-in-for-r.todo
+    - file: B370-complete-contact-grant-sending.todo

@@ -20,6 +20,6 @@ stats:
     blocked: 1
     done: 2
     in_progress: 0
-    pending: 0
-    total_tasks: 3
+    pending: 1
+    total_tasks: 4
 status: pending

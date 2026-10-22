@@ -1,0 +1,38 @@
+---
+claimed_at: "2026-10-22T08:45:35Z"
+claimed_by: codex-stream-vernal-3h9d
+completed_at: null
+complexity: high
+created_at: "2026-10-22T08:10:36Z"
+depends_on: []
+estimate_hours: 8
+id: B370
+priority: high
+started_at: "2026-10-22T08:45:35Z"
+status: in_progress
+tags: []
+title: Complete contact-grant sending across CLI connector and agent client surfaces
+updated_at: "2026-10-22T08:45:35Z"
+---
+## User-requested bug
+Recipient grant issue/list/revoke exists, but ordinary relay dm send and connector outbound still use /send and cannot consume a contact grant. A registered peer with a valid route cannot use the normal send workflow against private reachability; NAS DM smoke returned contact_unauthorised.
+
+## Existing partial fix — inspect before duplicating
+Unmerged branch fix/contact-deliver-client, commit 3513ca6c244a9c777143735bbb577504018f6a58, worktree ~/src/c2c/.worktrees/contact-deliver-client.
+Adds explicit relay contact deliver with private grant JSON, stable message-id, signed /contact/v1/deliver and HTTPS enforcement. Built/tested in isolation; NOT installed or NAS-tested. Reported TLS integration covers success, duplicates, wrong sender, HTTP refusal, file permissions, revocation and signed inbox polling. Parent verified commit and command help only. Generic sends/tools/connectors remain grant-unaware.
+
+## Acceptance
+- Review/reuse partial fix, avoid duplicate overlapping CLI work; follow repo exact-source/buildbox gates before install.
+- Provide supported protected grant import/storage/selection/sharing/rotation/revocation UX; no secrets on argv/logs or metadata/list outputs.
+- Ordinary CLI sends, connector persisted outbox/retries and supported agent tool/plugin paths select intended grant and use contact admission, with correct sender/recipient identity, destination and reply route. Separate reverse grant for replies.
+- No fallback to legacy /send on missing/invalid/expired/revoked grant. Clear actionable diagnostics without recipient enumeration or secret leakage.
+- Stable message IDs and crash/restart/response-loss tests prove exactly-once effects and pending-mail preservation. Mixed-version compatibility and explicit LAN transport opt-in integrate without weakening defaults.
+- Test two actual hosts in both directions with reply, denied sender, revoke/rotate, restart and duplicates; publish source/binary/hash receipts. A room message is not a DM proof.
+- Keep machine-wide public relay settings, connector lease keys and foreign registrations intact.
+
+## Related but distinct
+P9 T3 uses shared send/connector code: coordinate one serial integration lane; this generic client bug must not silently rewrite/close P9.M2.E1.T003 or substitute NAS tests for its public-relay proof.
+Hermes fixed-target delivery/wake is separately scoped by I016; no claim that grant CLI alone wires an existing live TUI session.
+Deployment docs: lan-swarm operations/c2c-relay-dev-nas.md.
+
+Execution decision (2026-10-22): user explicitly authorized implementation. Reuse draft 3513ca6c in a dedicated integration worktree; B369 transport policy lands first in the same serial lane, then shared grant storage/selection, normal CLI/connector/agent surfaces and two-host proof. New sources invalidate prior exact-source/install receipts. Public P9 proof remains separate; T004 review waits for T003.
