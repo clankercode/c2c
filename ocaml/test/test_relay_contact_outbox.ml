@@ -163,13 +163,37 @@ let test_exact_copy_and_conflicts () = with_temp (fun root ->
   expect_preserved_error (fun () -> ignore (migrate root));
   Alcotest.(check string) "conflicting legacy preserved" conflict (read old);
   Alcotest.(check string) "v2 conflict preserved" v2_before (read (Conn.outbox_path root));
-  let reroute = json_line (`Assoc (legacy_fields @ [
-      "message_id", `String "original-id"; "relay_url", `String other_relay])) in
-  write old reroute;
+  let sender_conflict = json_line (`Assoc (replace "from_alias" (`String "other-sender")
+      (legacy_fields @ ["message_id", `String "original-id"]))) in
+  write old sender_conflict;
   expect_preserved_error (fun () -> ignore (migrate root));
-  Alcotest.(check string) "conflicting destination preserved" reroute (read old);
-  Alcotest.(check string) "original destination not rewritten" v2_before (read (Conn.outbox_path root));
+  Alcotest.(check string) "conflicting sender preserved" sender_conflict (read old);
+  Alcotest.(check string) "original intent not rewritten" v2_before (read (Conn.outbox_path root));
   Alcotest.(check bool) "original intent still pending" true (copied = Conn.read_outbox root))
+
+let test_destination_namespaces () = with_temp (fun root ->
+  let original = entry () in
+  let other_route = {original with Conn.ob_to = "other@0123456789ab"} in
+  let other_host = {original with Conn.ob_to = "receiver@abcdef012345"} in
+  let other_url = {original with Conn.ob_relay_url = Some other_relay} in
+  Conn.write_outbox root [original; other_route; other_host; other_url];
+  (* An exact replay finds its own copy even when all destinations reuse the
+     ID. Equivalent URL spelling belongs to that same destination namespace. *)
+  let equivalent = {original with Conn.ob_relay_url = Some (relay ^ "/")} in
+  write (Conn.legacy_outbox_path root)
+    (String.concat "" (List.map (fun row -> json_line (Conn.outbox_entry_json row))
+       [equivalent; other_route; other_host; other_url]));
+  let rows = migrate root in
+  Alcotest.(check bool) "replays matched within each destination" true
+    (rows = [original; other_route; other_host; other_url]);
+  let fresh = {original with Conn.ob_to = "third@0123456789ab"} in
+  write (Conn.legacy_outbox_path root) (json_line (Conn.outbox_entry_json fresh));
+  Alcotest.(check bool) "independent destination with same ID retained" true
+    (migrate root = rows @ [fresh]);
+  let fresh_url = {fresh with Conn.ob_relay_url = Some other_relay} in
+  write (Conn.legacy_outbox_path root) (json_line (Conn.outbox_entry_json fresh_url));
+  Alcotest.(check bool) "independent relay with same ID retained" true
+    (migrate root = rows @ [fresh; fresh_url]))
 
 let bad_rows ~legacy =
   let base = if legacy then legacy_fields else
@@ -330,6 +354,30 @@ let test_protected_append_and_retry () = with_temp (fun root -> with_contact roo
   Alcotest.(check int) "disabled route makes no HTTP request" before (List.length !paths);
   Alcotest.(check bool) "pending protected intent retained" true (pending = Conn.read_outbox root)))
 
+let test_append_delimiter () = with_temp (fun root -> with_contact root (fun _ ->
+  let original = entry () in
+  let serialized = Yojson.Safe.to_string (Conn.outbox_entry_json original) in
+  List.iter (fun suffix ->
+    write (Conn.outbox_path root) (serialized ^ suffix);
+    Conn.append_outbox_entry root ~from_alias:"sender" ~to_alias:target
+      ~content:"next protected payload" ~message_id:"next-id" ();
+    let rows = Conn.read_outbox root in
+    Alcotest.(check int) "both complete records remain readable" 2 (List.length rows);
+    Alcotest.(check bool) "existing record retained" true (List.hd rows = original);
+    Alcotest.(check (option string)) "new message accepted once" (Some "next-id")
+      (List.nth rows 1).Conn.ob_msg_id)
+    [""; "\n"; "  "];
+  write (Conn.outbox_path root) "";
+  Conn.append_outbox_entry root ~from_alias:"sender" ~to_alias:target
+    ~content:"empty queue append" ~message_id:"empty-id" ();
+  Alcotest.(check int) "empty queue append readable" 1 (List.length (Conn.read_outbox root));
+  let damaged = serialized ^ "\n{\"version\":" in
+  write (Conn.outbox_path root) damaged;
+  expect_preserved_error (fun () -> Conn.append_outbox_entry root ~from_alias:"sender"
+      ~to_alias:target ~content:"must remain refused" ~message_id:"refused-id" ());
+  Alcotest.(check string) "incomplete record remains untouched" damaged
+    (read (Conn.outbox_path root))))
+
 let () =
   Alcotest.run "relay-contact-outbox" [
     "migration", [
@@ -338,10 +386,12 @@ let () =
       Alcotest.test_case "source-normalization crash survives legacy append" `Quick test_source_crash_replay;
       Alcotest.test_case "identical fresh legacy batch is separate mail" `Quick test_new_legacy_batch;
       Alcotest.test_case "exact copy deduped; conflicting copy preserved" `Quick test_exact_copy_and_conflicts;
+      Alcotest.test_case "message IDs are scoped to relay and recipient" `Quick test_destination_namespaces;
       Alcotest.test_case "offline marker pins once" `Quick test_offline_marker ];
     "malformed legacy", List.map (malformed_case ~legacy:true) (bad_rows ~legacy:true);
     "malformed v2", List.map (malformed_case ~legacy:false) (bad_rows ~legacy:false);
     "new intents", [
       Alcotest.test_case "invalid writes preserve original bytes" `Quick test_invalid_new_writes;
+      Alcotest.test_case "append repairs only a complete row delimiter" `Quick test_append_delimiter;
       Alcotest.test_case "old reader isolation, lost response, disable" `Quick test_protected_append_and_retry ];
   ]

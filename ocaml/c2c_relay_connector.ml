@@ -1452,18 +1452,23 @@ let migrate_legacy_outbox_locked broker_root ~relay_url =
       | Some id -> id
       | None -> "legacy-v1-" ^ Digestif.SHA256.(to_hex (digest_string
           ("c2c-outbox-migration/1:" ^ source ^ ":" ^ string_of_int occurrence ^ ":" ^ seed))) in
-    let original = {original with ob_msg_id = Some message_id} in
-    match List.filter (fun entry -> entry.ob_msg_id = Some message_id) entries with
+    let original = pin {original with ob_msg_id = Some message_id} in
+    (* IDs are scoped to the destination, just as in the protected contact
+       store. An independent recipient or relay may legitimately reuse one.
+       A replay already has its original URL committed in the legacy source. *)
+    let same_namespace entry =
+      entry.ob_msg_id = original.ob_msg_id && entry.ob_to = original.ob_to
+      && Option.map Relay_contact_store.canonical_url entry.ob_relay_url
+         = Option.map Relay_contact_store.canonical_url original.ob_relay_url in
+    match List.filter same_namespace entries with
     | [] ->
-        let entry = pin original in
-        entries @ [entry], entry :: staged
+        entries @ [original], original :: staged
     | [copied] ->
-        (* Defaults for genuinely omitted fields come from the durable copy.
-           An omitted URL must not adopt today's relay after a config change. *)
+        (* Equivalent origin spellings retain the durable copy's URL. Only a
+           genuinely omitted timestamp may inherit its previously stored value. *)
         let candidate = {
           original with
-          ob_relay_url = (if List.mem_assoc "relay_url" fields then original.ob_relay_url
-                          else copied.ob_relay_url);
+          ob_relay_url = copied.ob_relay_url;
           ob_enqueued_at = (if List.mem_assoc "enqueued_at" fields then original.ob_enqueued_at
                             else copied.ob_enqueued_at);
         } in
@@ -2316,9 +2321,22 @@ let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id (
   with_outbox_lock broker_root (fun () ->
     (* Do not append to a damaged queue and later reinterpret its tail. *)
     ignore (read_outbox broker_root);
+    (* A complete final JSON row remains readable if a previous writer stopped
+       before its newline. Supply that delimiter under the same writer lock,
+       rather than concatenating two otherwise valid records. *)
+    let needs_newline =
+      if not (Sys.file_exists path) then false
+      else
+        let ic = open_in_bin path in
+        Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+          let length = in_channel_length ic in
+          if length = 0 then false
+          else (seek_in ic (length - 1); input_char ic <> '\n')) in
     let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o600 path in
     Fun.protect ~finally:(fun () -> close_out_noerr oc)
-      (fun () -> output_string oc line; flush oc; Unix.fsync (Unix.descr_of_out_channel oc)));
+      (fun () ->
+        if needs_newline then output_char oc '\n';
+        output_string oc line; flush oc; Unix.fsync (Unix.descr_of_out_channel oc)));
   C2c_io.fsync_path (Filename.dirname path)
 
 (* ---------------------------------------------------------------------------
