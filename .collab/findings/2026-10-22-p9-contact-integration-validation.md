@@ -74,14 +74,48 @@ no private key was copied and no authorized-keys file was changed.
 
 The final independent proof rereview passed after process-wide non-raising
 signal handlers and a diagnostic-cleanup fallback were added. A fresh r12
-run then passed with the final script hashes. The isolated NAS30435 Debian
-canary remains in progress. Intermediate proof-driver failures are preserved and are
-not PASS receipts. Production NAS30434 and machine-wide relay configuration
-remain outside these fixtures.
+run then passed with the final script hashes. Intermediate proof-driver
+failures are preserved and are not PASS receipts. Production NAS30434 and
+machine-wide relay configuration remain outside these fixtures.
+
+The separate no-hardlinks b8 clone on x-p35 produced a Debian 12 package using
+the unchanged repository Dockerfile, OCaml 5.2.1 and Dune 3.24.2. Artifact
+SHA-256: `c7b3b9d617885721e92c0602e1fb8c3fde27a9f54fe4c0dd9ecd39bfbc98263d`.
+Builder image:
+`sha256:748518c4d9af82d1dad83c93f8e9a160d866e7253aae25d202c5e87ae5f7b29d`.
+An owned Debian 12 container resolved all libraries and ran the artifact with
+networking disabled and a read-only root. Maximum required glibc is 2.35;
+runtime glibc was 2.36. The first probe stopped on an unnecessary opam log write
+before binary startup; its failed receipt/log remain preserved. The corrected
+direct-binary probe passed. Owned temporary containers were removed, and
+original source/manifests/installed files stayed unchanged. Metadata:
+`/home/xertrov/.cache/c2c/p9/b8c42376-debian-package.json`.
+This packaging receipt does not relabel the original eight-artifact manifests
+and does not itself prove NAS runtime behavior. The verified artifact was
+released to the NAS30435 canary owner under the existing test authorization.
+
+The independent NAS30435 canary subsequently passed 13 checks: signed isolated
+identities, client/server HTTP defaults, explicit opt-in disclosure, wrong-sender
+refusal, shared send and separate reverse-grant reply, duplicate handling,
+ordinary CLI outbox delivery, real container restart with SQLite mail and
+dedupe retention, old-message grant pinning, rotation and revocation. The parent
+read the test script/receipts and independently verified the running binary
+hash and runtime image:
+`sha256:0da6bea141437e4fbc85fe5fafd86b9e3486d9fd311463e90887e6c986fd283e`.
+Production30434's container/image/start time matched its before/after receipt,
+and its health remained good. Dev30435 is retained running with restart `no`,
+separate state and a new secret. No production/default configuration changed.
+Canary metadata is preserved as `b8c42376-nas-*.json` and
+`b8c42376-nas-canary-receipt.md` in the coordinator evidence directory.
+This canary used the precompiled Debian binary on xsm as client and NAS as
+server; it does not claim a p35-to-NAS actor pair, MCP, TLS, response-loss,
+Hermes wake, or public T3 execution. Those distinct evidence boundaries remain.
 
 P9.M2.E1.T003 still requires the actual public-relay T3 proof through
-`https://relay.c2c.im`; isolated/NAS contact proofs cannot replace it. At
-11:11 UTC production still reported `a0b52e4`. Railway's live status page
+`https://relay.c2c.im`; isolated/NAS contact proofs cannot replace it. At the
+final check, production still reported `a0b52e4` from the workstation and both
+buildboxes. The timestamp, full health responses and headers are preserved in
+`b8c42376-public-rollout-blocker.json` in the coordinator evidence directory. Railway's live status page
 reported the ongoing platform incident and deployment delays. The authorized
 master push starts the automatic rollout; it does not prove rollout success.
 GitHub CI `39768431737`, Docker smoke `39768431878`, and Pages
@@ -90,5 +124,15 @@ unauthorized; no login or manual deployment was performed or required for the
 existing push-triggered rollout.
 P9.M2.E1.T004 remains dependent on T003 completion.
 
-B369/B370 remain open until their required live canary and two-host evidence
-complete. Hermes gateway delivery/wake remains separately scoped.
+The production two-host T3 driver passed independent source rereview after
+fixes for broken-output cleanup and complete nonce/queue duplicate auditing.
+It remains **prepared, not executed**. Reviewed scripts, hashes and syntax
+receipts are preserved in
+`/home/xertrov/.cache/c2c/p9/public-proof-b8-20261022/`; the source-review result
+is `b8c42376-public-proof-source-review.json` in the parent evidence directory.
+Execution requires the actual compatible public rollout, followed by the
+documented explicit public-URL command. Source review does not close T003.
+
+B369/B370 are closed after their reviewed, merged implementation, required
+build/install gates, actual two-host proof and independent NAS canary passed.
+Hermes gateway delivery/wake remains separately scoped.

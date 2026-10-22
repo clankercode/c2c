@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-10-22T08:45:35Z"
 claimed_by: codex-stream-vernal-3h9d
-completed_at: null
+completed_at: "2026-10-22T11:45:30Z"
 complexity: high
 created_at: "2026-10-22T08:10:36Z"
 depends_on: []
+duration_minutes: 179.9277567353
 estimate_hours: 8
 id: B369
 priority: high
 started_at: "2026-10-22T08:45:35Z"
-status: in_progress
+status: done
 tags: []
 title: Explicit LAN HTTP opt-in for relay contact delivery without disabling authentication
-updated_at: "2026-10-22T08:45:35Z"
+updated_at: "2026-10-22T11:45:30Z"
 ---
 ## User-requested change
 Allow explicitly configuring a relay to accept HTTP contact-grant delivery for trusted LAN environments. Default remains HTTPS/confidential transport required. This is a deliberate transport-policy exception, not tokenless dev mode and not a reason to weaken recipient consent.
@@ -37,3 +38,6 @@ Execution decision (2026-10-22): user explicitly authorized implementation. One 
 
 
 2026-10-22 validation: reviewed implementation b8c42376 merged/pushed after BOTH buildboxes passed all6 exact-source gates, guarded just bi/all8 installed hashes and native T3 proofs. Actual x-p35↔x-tuf isolated LAN contact proof r10 PASS: normal CLI+connector and explicit DM, separate reverse grants/replies, duplicates, post-admission response-loss and relay/connector restart, BOTHdirections wrong-sender/rotation/revocation;21signedrequests/8inboxeffects/4duplicates/2relayrestarts/zero429fallbacktakeover, allcleanup/source/bin/manifeststability. Original+final receipts ~/.cache/c2c/p9/b8c42376-*.json; parent verified hashes. Final independent proof review and Debian packaging/NAS30435 canary still pending, so ticket remains open. Driver-induced registration429 and option-quoting failures were corrected only in standalone harness; no product source fix. PublicP9gate remains separate.
+
+
+2026-10-22 COMPLETE: source b8c42376 merged/pushed, all6 exact-source gates+guardedall8install PASS bothhosts and independent source reviews PASS. Reviewed final actualtwohostLANproof r12PASS (21signedrequests,8effects,4dup,2restarts, bothdirections replies/wrongsender/rotate/revoke/responseloss;cleanup/stabilityPASS). Debian12 package c7b3b9d617885721e92c0602e1fb8c3fde27a9f54fe4c0dd9ecd39bfbc98263d runtimecheckPASS. Independent NAS30435canary13checksPASS including client/serverHTTPdefaults, explicitpolicy, sharedsend/reversegrantreply, normalCLIqueue, duplicateonce, realcontainerSQLite+deduperestart, rotateoldpin/newID, revoke. Parent read receipts/scripts and independently matched runningNASimage0da6bea141437e4fbc85fe5fafd86b9e3486d9fd311463e90887e6c986fd283e + fullbinaryhash; production30434container/image/start unchanged and healthy. Sanitized metadata preserved ~/.cache/c2c/p9/b8c42376-nas-*.json and nas-canary-receipt.md, report .collab/findings/2026-10-22-p9-contact-integration-validation.md. NAScanaryretainedrunning restart=no withownstate/newsecret; no publicdefaults/foreignstatechanges. MCP/TLS/response-loss covered separately by nativegates/otherproofs, not claimedNASspecific; Hermeswake unverifiedseparatescope. P9T003publicrelaygateNOTclosedandT004stilldependent.
