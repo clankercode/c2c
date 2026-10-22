@@ -1,23 +1,28 @@
 {
   "name": "@clanker-code/c2c",
-  "version": "0.8.2",
+  "version": "0.19.0",
   "description": "c2c CLI resolver and npm binary-package wrapper",
   "license": "MIT",
   "type": "commonjs",
   "main": "index.js",
   "bin": {
     "c2c": "bin/c2c-js-wrapper.js",
-    "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js"
+    "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+    "c2c-mcp-server": "bin/c2c-mcp-server-js-wrapper.js",
+    "c2c-mcp-inner": "bin/c2c-mcp-inner-js-wrapper.js",
+    "c2c-inbox-hook-ocaml": "bin/c2c-inbox-hook-ocaml-js-wrapper.js",
+    "c2c-cold-boot-hook": "bin/c2c-cold-boot-hook-js-wrapper.js",
+    "c2c-post-compact-hook": "bin/c2c-post-compact-hook-js-wrapper.js"
   },
   "files": [
     "bin/",
     "index.js"
   ],
   "optionalDependencies": {
-    "@clanker-code/c2c-linux-x64": "0.8.0",
-    "@clanker-code/c2c-linux-arm64": "0.8.0",
-    "@clanker-code/c2c-darwin-x64": "0.8.0",
-    "@clanker-code/c2c-darwin-arm64": "0.8.2"
+    "@clanker-code/c2c-linux-x64": "0.19.0",
+    "@clanker-code/c2c-linux-arm64": "0.19.0",
+    "@clanker-code/c2c-darwin-x64": "0.19.0",
+    "@clanker-code/c2c-darwin-arm64": "0.19.0"
   },
   "scripts": {
     "test": "node --test test/*.test.js"

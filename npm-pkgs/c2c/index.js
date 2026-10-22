@@ -18,7 +18,7 @@ const TARGETS = {
   },
 };
 
-const EXECUTABLES = new Set(["c2c", "c2c-deliver-inbox"]);
+const EXECUTABLES = new Set(["c2c", "c2c-deliver-inbox", "c2c-mcp-server", "c2c-mcp-inner", "c2c-inbox-hook-ocaml", "c2c-cold-boot-hook", "c2c-post-compact-hook"]);
 
 function normalizeExecutable(executable = "c2c") {
   if (!EXECUTABLES.has(executable)) {
@@ -28,7 +28,7 @@ function normalizeExecutable(executable = "c2c") {
 }
 
 function envOverrideName(executable) {
-  return executable === "c2c-deliver-inbox" ? "C2C_DELIVER_INBOX_BIN" : "C2C_BIN";
+  return executable === "c2c" ? "C2C_BIN" : `${executable.toUpperCase().replaceAll("-", "_")}_BIN`;
 }
 
 function canExecute(file) {

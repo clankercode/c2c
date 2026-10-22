@@ -22,7 +22,7 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     artifacts = tmp_path / "artifacts"
     for platform in release.PLATFORMS.values():
         binary_dir = artifacts / f"c2c-{platform.target}"
-        for executable in [platform.exe_name, "c2c-deliver-inbox"]:
+        for executable in [platform.exe_name, "c2c-deliver-inbox", "c2c-mcp-server", "c2c-mcp-inner", "c2c-inbox-hook-ocaml", "c2c-cold-boot-hook", "c2c-post-compact-hook"]:
             binary = binary_dir / executable
             binary.parent.mkdir(parents=True, exist_ok=True)
             binary.write_text("binary", encoding="utf-8")
@@ -49,15 +49,27 @@ def test_package_npm_stages_meta_and_platform_packages(tmp_path: Path) -> None:
     assert linux["os"] == ["linux"]
     assert linux["cpu"] == ["x64"]
     assert linux["repository"] == meta["repository"]
+    for executable in ["c2c-mcp-server", "c2c-mcp-inner", "c2c-inbox-hook-ocaml", "c2c-cold-boot-hook", "c2c-post-compact-hook"]:
+        assert (dist / "c2c-linux-x64" / "bin" / executable).is_file()
     assert linux["bin"] == {
         "c2c": "bin/c2c",
         "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+        "c2c-mcp-server": "bin/c2c-mcp-server",
+        "c2c-mcp-inner": "bin/c2c-mcp-inner",
+        "c2c-inbox-hook-ocaml": "bin/c2c-inbox-hook-ocaml",
+        "c2c-cold-boot-hook": "bin/c2c-cold-boot-hook",
+        "c2c-post-compact-hook": "bin/c2c-post-compact-hook",
     }
     assert (dist / "c2c-linux-x64" / "bin" / "c2c").exists()
     assert (dist / "c2c-linux-x64" / "bin" / "c2c-deliver-inbox").exists()
     assert meta["bin"] == {
         "c2c": "bin/c2c-js-wrapper.js",
         "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+        "c2c-mcp-server": "bin/c2c-mcp-server-js-wrapper.js",
+        "c2c-mcp-inner": "bin/c2c-mcp-inner-js-wrapper.js",
+        "c2c-inbox-hook-ocaml": "bin/c2c-inbox-hook-ocaml-js-wrapper.js",
+        "c2c-cold-boot-hook": "bin/c2c-cold-boot-hook-js-wrapper.js",
+        "c2c-post-compact-hook": "bin/c2c-post-compact-hook-js-wrapper.js",
     }
     assert (dist / "c2c" / "index.js").read_text(encoding="utf-8") == (
         release.repo_root() / "npm-pkgs" / "c2c" / "index.js"

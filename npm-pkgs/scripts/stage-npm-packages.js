@@ -12,7 +12,7 @@ const TARGETS = [
   { dir: "c2c-darwin-arm64", os: "darwin", cpu: "arm64" },
 ];
 
-const EXECUTABLES = ["c2c", "c2c-deliver-inbox"];
+const EXECUTABLES = ["c2c", "c2c-deliver-inbox", "c2c-mcp-server", "c2c-mcp-inner", "c2c-inbox-hook-ocaml", "c2c-cold-boot-hook", "c2c-post-compact-hook"];
 
 function parseArgs(argv) {
   const options = {};
@@ -133,6 +133,9 @@ function stageMetaPackage({ version, outDir }) {
   fs.chmodSync(path.join(packageDir, "bin", "c2c-js-wrapper.js"), 0o755);
   fs.chmodSync(path.join(packageDir, "bin", "c2c-deliver-inbox-js-wrapper.js"), 0o755);
 
+  for (const executable of EXECUTABLES.slice(2)) {
+    copyExecutable(path.join(sourceRoot, "bin", "c2c-js-wrapper.js"), path.join(packageDir, "bin", `${executable}-js-wrapper.js`));
+  }
   writeJson(path.join(packageDir, "package.json"), {
     name: "@clanker-code/c2c",
     version,
@@ -143,6 +146,7 @@ function stageMetaPackage({ version, outDir }) {
     bin: {
       c2c: "bin/c2c-js-wrapper.js",
       "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+      ...Object.fromEntries(EXECUTABLES.slice(2).map(name => [name, `bin/${name}-js-wrapper.js`])),
     },
     files: ["bin/", "index.js"],
     optionalDependencies: optionalDependencies(version),
@@ -167,6 +171,7 @@ function stagePlatformPackage({ version, binaryRoot, outDir, target }) {
     bin: {
       c2c: "bin/c2c",
       "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+      ...Object.fromEntries(EXECUTABLES.slice(2).map(name => [name, `bin/${name}`])),
     },
   });
 }

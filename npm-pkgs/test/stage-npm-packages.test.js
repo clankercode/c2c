@@ -14,7 +14,7 @@ const targets = [
   ["c2c-darwin-x64", "darwin", "x64"],
   ["c2c-darwin-arm64", "darwin", "arm64"],
 ];
-const executables = ["c2c", "c2c-deliver-inbox"];
+const executables = ["c2c", "c2c-deliver-inbox", "c2c-mcp-server", "c2c-mcp-inner", "c2c-inbox-hook-ocaml", "c2c-cold-boot-hook", "c2c-post-compact-hook"];
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "c2c-npm-stage-"));
@@ -49,6 +49,7 @@ test("stage script creates meta and platform package directories", () => {
   assert.deepEqual(metaPackage.bin, {
     c2c: "bin/c2c-js-wrapper.js",
     "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+    ...Object.fromEntries(executables.slice(2).map(name => [name, `bin/${name}-js-wrapper.js`])),
   });
   assert.deepEqual(metaPackage.files, ["bin/", "index.js"]);
 
@@ -68,6 +69,7 @@ test("stage script creates meta and platform package directories", () => {
     assert.deepEqual(packageJson.bin, {
       c2c: "bin/c2c",
       "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+      ...Object.fromEntries(executables.slice(2).map(name => [name, `bin/${name}`])),
     });
     for (const executable of executables) {
       assert.equal(

@@ -198,10 +198,9 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
         pkg_dir = dist_dir / f"c2c-{platform.npm_suffix}"
         bin_dir = pkg_dir / "bin"
         bin_dir.mkdir(parents=True)
-        shutil.copy2(artifact_binary(artifacts_dir, platform, platform.exe_name), bin_dir / platform.exe_name)
-        (bin_dir / platform.exe_name).chmod(0o755)
-        shutil.copy2(artifact_binary(artifacts_dir, platform, "c2c-deliver-inbox"), bin_dir / "c2c-deliver-inbox")
-        (bin_dir / "c2c-deliver-inbox").chmod(0o755)
+        for executable in [platform.exe_name, "c2c-deliver-inbox", "c2c-mcp-server", "c2c-mcp-inner", "c2c-inbox-hook-ocaml", "c2c-cold-boot-hook", "c2c-post-compact-hook"]:
+            shutil.copy2(artifact_binary(artifacts_dir, platform, executable), bin_dir / executable)
+            (bin_dir / executable).chmod(0o755)
         package_json(pkg_dir / "package.json", {
             "name": pkg_name,
             "version": version,
@@ -214,6 +213,11 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
             "bin": {
                 "c2c": f"bin/{platform.exe_name}",
                 "c2c-deliver-inbox": "bin/c2c-deliver-inbox",
+                "c2c-mcp-server": "bin/c2c-mcp-server",
+                "c2c-mcp-inner": "bin/c2c-mcp-inner",
+                "c2c-inbox-hook-ocaml": "bin/c2c-inbox-hook-ocaml",
+                "c2c-cold-boot-hook": "bin/c2c-cold-boot-hook",
+                "c2c-post-compact-hook": "bin/c2c-post-compact-hook",
             },
         })
 
@@ -230,6 +234,11 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
         "bin": {
             "c2c": "bin/c2c-js-wrapper.js",
             "c2c-deliver-inbox": "bin/c2c-deliver-inbox-js-wrapper.js",
+            "c2c-mcp-server": "bin/c2c-mcp-server-js-wrapper.js",
+            "c2c-mcp-inner": "bin/c2c-mcp-inner-js-wrapper.js",
+            "c2c-inbox-hook-ocaml": "bin/c2c-inbox-hook-ocaml-js-wrapper.js",
+            "c2c-cold-boot-hook": "bin/c2c-cold-boot-hook-js-wrapper.js",
+            "c2c-post-compact-hook": "bin/c2c-post-compact-hook-js-wrapper.js",
         },
         "files": ["bin/", "index.js"],
         "optionalDependencies": optional_dependencies,
@@ -239,6 +248,10 @@ def stage_npm_packages(artifacts_dir: Path, dist_dir: Path, version: str, scope:
     shutil.copy2(source_pkg / "bin" / "c2c-js-wrapper.js", meta_dir / "bin" / "c2c-deliver-inbox-js-wrapper.js")
     (meta_dir / "bin" / "c2c-js-wrapper.js").chmod(0o755)
     (meta_dir / "bin" / "c2c-deliver-inbox-js-wrapper.js").chmod(0o755)
+    for executable in ['c2c-mcp-server', 'c2c-mcp-inner', 'c2c-inbox-hook-ocaml', 'c2c-cold-boot-hook', 'c2c-post-compact-hook']:
+        wrapper = meta_dir / "bin" / f"{executable}-js-wrapper.js"
+        shutil.copy2(source_pkg / "bin" / "c2c-js-wrapper.js", wrapper)
+        wrapper.chmod(0o755)
     print(dist_dir)
 
 

@@ -7,7 +7,7 @@ const { resolveC2cBinary } = require("..");
 
 function executableForWrapper(argv1) {
   const basename = path.basename(argv1 || "c2c");
-  return basename.startsWith("c2c-deliver-inbox") ? "c2c-deliver-inbox" : "c2c";
+  return basename.replace(/-js-wrapper\.js$/, "");
 }
 
 function packageManagerForWrapper(selfPath, env = process.env) {
@@ -47,6 +47,9 @@ function main() {
     // binary under node_modules.
     env: {
       ...process.env,
+      // Native installers resolve the MCP server via PATH. Keep the bundled
+      // siblings discoverable even for an absolute wrapper invocation.
+      PATH: `${path.dirname(binary)}${path.delimiter}${process.env.PATH || ""}`,
       C2C_SELF_UPDATE_PACKAGE_MANAGER: packageManagerForWrapper(__filename),
     },
   });

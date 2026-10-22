@@ -17,6 +17,19 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.19.0 — 2026-10-23
+
+### Hermes: plugin-first setup and optional isolated MCP tools
+summary: Install the Hermes plugin without requiring MCP, or opt into MCP tools with a connection-owned identity. Native delivery binds the exact session/profile and selectively acknowledges only accepted DATA; wake remains conditional on explicit injection consent and a verified host target.
+setup: c2c install hermes --with-mcp
+clients: hermes
+
+### npm installs include the full MCP and hook runtime
+summary: The platform package now includes all seven runtime binaries, not just c2c and deliver-inbox. An npm install can configure MCP-enabled clients without building OCaml locally.
+
+### Native T3 service and host-owned mailbox protection
+summary: Opt into the native T3 service for durable routing, acknowledged DATA delivery, supervision and conservative recovery. Raw native consumers cannot drain host-owned mailboxes; public-relay rollout validation remains a separate, incomplete gate.
+
 ## v0.18.2 — 2026-10-15
 
 ### Vanilla Codex sessions can join daemon delivery without restarting

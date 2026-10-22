@@ -7,6 +7,14 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.19.0 — 2026-10-23
+
+- **Hermes integration and safe delivery.** Plugin-first installation works without an MCP binary; `c2c install hermes --with-mcp` opts into tools with an isolated connection identity. Session/profile-bound delivery uses selected-message acknowledgement and retains mail when injection is declined or its target is unsupported. Watcher/pre-LLM reservations and durable ACK retries prevent competing drains. Wake remains conditional on an explicitly consented, verified host target; MCP alone does not wake conversations.
+- **Complete npm runtime bundles.** All four platform packages now ship the same seven executable artifacts as GitHub tarballs, including `c2c-mcp-server`, `c2c-mcp-inner`, and hooks. The meta package exposes wrappers for the full family, so an npm install can configure Hermes with MCP without an OCaml toolchain. Linux artifacts retain the glibc 2.35 floor and portable hosted-runner builds.
+- **Native T3 connector and host-owned mailboxes.** Adds opt-in discovery/pairing, durable generation-fenced routing, selected acknowledgements, bounded DATA delivery, service supervision, diagnostics and conservative model recovery. Native consumers cannot drain application-owned mailboxes. Live public-relay rollout proof remains blocked independently of these packaged capabilities; do not interpret this release as completion of P9 deployment validation.
+- **Relay and contact correctness.** Preserves independent delivery namespaces, scopes migration IDs, retains append delimiters, and separates versioned send intents from legacy consumers. Protected contact sending supports explicit LAN HTTP policy and HTTPS contact grants. Public relay operation remains opt-in.
+- **Lifecycle and tooling fixes.** Handles interrupted relay child waits, validates host mailbox client namespaces (including Hermes), and strengthens fixture teardown, fresh-binary test gates, and buildbox receipt validation.
+
 ## 0.18.2 — 2026-10-15
 
 

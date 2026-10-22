@@ -174,7 +174,7 @@ Windows on the hosted `ocaml/setup-ocaml` compiler.
 `cc-quota` is intentionally excluded from release tarballs because it depends
 on operator-local Claude tooling and is not portable c2c runtime surface.
 
-The workflow also stages npm platform packages and the `@clanker-code/c2c`
+The workflow also stages npm platform packages (the complete seven-binary family above) and the `@clanker-code/c2c`
 meta package. Every package is dry-run packed first, and platform packages
 publish before the meta package. A tag push publishes npm packages
 automatically through Trusted Publishing after the dry-run checks. A manual
@@ -224,6 +224,10 @@ Also compare the live relay `/health` fields (`version`, `git_hash`,
 `auth_mode`) to the released artifact and expected production mode.
 The write-capable `scripts/relay-smoke-test.sh` is only for isolated local
 relays and refuses non-loopback URLs.
+
+## 2026-10-23 packaging verification
+
+Both npm staging implementations must ship the complete GitHub binary family, and the meta package must expose all matching wrappers. Before tagging, run `just npm-test` and `python3 -m pytest tests/test_release_tool.py --force-test-env`. After publishing, install the actual registry package into an isolated prefix, run `c2c install hermes --with-mcp` with an isolated HOME/HERMES_HOME and broker, then complete an MCP initialize/tools/list round trip. Do not substitute a local xsm binary for NAS: use the hosted Linux x64 asset (glibc <= 2.35).
 
 ## Failure Modes
 
