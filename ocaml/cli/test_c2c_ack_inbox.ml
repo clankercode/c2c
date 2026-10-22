@@ -219,7 +219,8 @@ let test_durability_order () = fixture (fun _ broker ->
   ignore (ack broker [ "a" ]);
   C2c_io.set_fsync_for_test None;
   check_ids "strict file and directory sync sequence"
-    [ archive; Filename.dirname archive; B.root broker; inbox; B.root broker ] !events)
+    [ archive; Filename.dirname archive; B.root broker;
+      inbox ^ ".tmp." ^ string_of_int (Unix.getpid ()); inbox; B.root broker ] !events)
 
 let test_untrusted_inbox () = fixture (fun home broker ->
   let path = inbox_path broker ~session_id:sid in
@@ -347,6 +348,47 @@ let test_post_rename_recovery ephemeral = fixture (fun _ broker ->
   check_ids "surviving mail retained" [ "keep" ] (ids reopened);
   check_ids "archive respects privacy through process recovery" (if ephemeral then [] else [ "a" ]) (archive_ids reopened))
 
+let test_archive_tail_recovery () = fixture (fun _ broker ->
+  B.append_archive broker ~session_id:sid ~messages:[ message "old" ];
+  B.save_inbox broker ~session_id:sid [ message "retry"; message "keep" ];
+  let archive = B.archive_path broker ~session_id:sid in
+  let child = Unix.fork () in
+  if child = 0 then begin
+    let fd = Unix.openfile archive [ Unix.O_WRONLY; Unix.O_APPEND ] 0 in
+    let partial = "{\"message_id\":\"retry\",\"content\":\"interrupted body" in
+    ignore (Unix.write_substring fd partial 0 (String.length partial));
+    Unix.fsync fd;
+    Unix._exit 77
+  end;
+  check bool "writer exited with partial archive record" true
+    (snd (Unix.waitpid [] child) = Unix.WEXITED 77);
+  ignore (ack broker [ "retry" ]);
+  check_ids "complete retry readable after interrupted append" [ "old"; "retry" ] (archive_ids broker);
+  check_ids "unrelated queued mail preserved" [ "keep" ] (ids broker);
+  (* A complete JSON record missing only its newline must also survive. *)
+  let contents = read archive in
+  write archive (String.sub contents 0 (String.length contents - 1));
+  ignore (ack broker [ "keep" ]);
+  check_ids "unterminated complete record retained" [ "old"; "retry"; "keep" ] (archive_ids broker))
+
+let test_pre_rename_sync_failure () =
+  List.iter (fun error -> fixture (fun _ broker ->
+    B.save_inbox broker ~session_id:sid [ message "a"; message "keep" ];
+    let inbox = inbox_path broker ~session_id:sid in
+    let tmp = inbox ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    let before = read inbox in
+    C2c_io.set_fsync_for_test (Some (fun path fd ->
+      if path = tmp then raise (Unix.Unix_error (error, "fsync", path));
+      Unix.fsync fd));
+    let failed = try ignore (ack broker [ "a" ]); false with Unix.Unix_error _ -> true in
+    C2c_io.set_fsync_for_test None;
+    check bool "temporary inbox sync error propagates" true failed;
+    check string "failed temp sync never replaces live inbox" before (read inbox);
+    check bool "failed replacement temp cleaned" false (Sys.file_exists tmp);
+    ignore (ack broker [ "a" ]);
+    check_ids "retry retains unrelated message" [ "keep" ] (ids broker)))
+    [ Unix.EIO; Unix.ENOSPC ]
+
 let () = run "selected inbox ACK" [ "native", [
   test_case "selected, ordered, unique and idempotent" `Quick test_selected_idempotent;
   test_case "ephemeral archive privacy" `Quick test_ephemeral;
@@ -366,4 +408,6 @@ let () = run "selected inbox ACK" [ "native", [
   test_case "buffered archive flush failure preserves inbox" `Quick test_buffered_archive_failure;
   test_case "process exit after rename and missing-ID durability retry" `Quick (fun () -> test_post_rename_recovery false);
   test_case "ephemeral process recovery preserves privacy" `Quick (fun () -> test_post_rename_recovery true);
+  test_case "interrupted archive append cannot poison retry" `Quick test_archive_tail_recovery;
+  test_case "temp inbox sync errors prevent rename" `Quick test_pre_rename_sync_failure;
 ] ]

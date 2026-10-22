@@ -82,7 +82,7 @@ open C2c_mcp_helpers
 
   exception Registry_state_untrusted of string
 
-  let write_json_file path json =
+  let write_json_file ?(durable = false) path json =
     (* Atomic write via temp+rename+fsync. A truncate-in-place writer that
        gets SIGKILLed (OOM, parent process exit, kill -9) between
        truncate and full write leaves a partial JSON file that the
@@ -115,7 +115,14 @@ open C2c_mcp_helpers
                to disk before the atomic-replace rename commits it, so readers
                always see either old or new content, never partial.
                Best-effort — EINVAL on unusual filesystems is silently ignored. *)
-            (try Unix.fsync (Unix.descr_of_out_channel oc) with Unix.Unix_error _ -> ()))
+            if durable then begin
+              (* Strict queue writers must never publish a replacement whose
+                 contents failed to reach stable storage. This also uses the
+                 existing durability fault-injection seam. *)
+              C2c_io.fsync_path tmp;
+              close_out oc
+            end else
+              (try Unix.fsync (Unix.descr_of_out_channel oc) with Unix.Unix_error _ -> ()))
      with e ->
        cleanup_tmp ();
        raise e);
@@ -2353,12 +2360,12 @@ open C2c_mcp_helpers
     end;
     result
 
-  let save_inbox t ~session_id messages =
+  let save_inbox ?(durable = false) t ~session_id messages =
     ensure_root t;
     let path = inbox_path t ~session_id in
     if debug_enabled then Printf.eprintf "[DEBUG save_inbox] session_id=%s path=%s msgs=%d\n%!"
       session_id path (List.length messages);
-    write_json_file path (`List (List.map message_to_json messages))
+    write_json_file ~durable path (`List (List.map message_to_json messages))
 
   let inbox_lock_path t ~session_id =
     Filename.concat t.root (session_id ^ ".inbox.lock")
@@ -3371,14 +3378,23 @@ open C2c_mcp_helpers
             (* Mode 0o600: archive records carry DM content, must not be
                world-readable. *)
             (* Not broker.log: DM archive append, not append_jsonl target. *)
-            let oc =
-              open_out_gen
-                [ Open_wronly; Open_append; Open_creat ]
-                0o600 (archive_path t ~session_id)
-            in
+            let fd = Unix.openfile (archive_path t ~session_id)
+              [ Unix.O_RDWR; Unix.O_APPEND; Unix.O_CREAT ] 0o600 in
+            let oc = Unix.out_channel_of_descr fd in
                 Fun.protect
                   ~finally:(fun () -> try close_out oc with _ -> ())
                   (fun () ->
+                    (* A failed append may have left an incomplete final
+                       JSON line. Delimit it before retrying so it cannot
+                       swallow the new full record. This is append-only and
+                       also preserves a complete record whose newline alone
+                       was lost. The archive reader ignores malformed lines. *)
+                    if (Unix.LargeFile.fstat fd).Unix.LargeFile.st_size > 0L then begin
+                      ignore (Unix.LargeFile.lseek fd (-1L) Unix.SEEK_END);
+                      let last = Bytes.create 1 in
+                      if Unix.read fd last 0 1 <> 1 then raise End_of_file;
+                      if Bytes.get last 0 <> '\n' then output_char oc '\n'
+                    end;
                     let ts = Unix.gettimeofday () in
                     List.iter
                       (fun message ->
@@ -3752,7 +3768,7 @@ open C2c_mcp_helpers
                  C2c_io.fsync_file_and_parent (archive_path t ~session_id);
                  C2c_io.fsync_path t.root
                end;
-               save_inbox t ~session_id rest);
+               save_inbox ~durable t ~session_id rest);
           (* A previous attempt may have renamed the inbox but failed its
              final sync. Even an all-missing retry must complete durability
              before reporting success. An absent inbox still needs its

@@ -573,7 +573,7 @@ module Broker : sig
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
   val read_inbox : ?assign_ids:bool -> ?strict:bool -> t -> session_id:string -> message list
-  val save_inbox : t -> session_id:string -> message list -> unit
+  val save_inbox : ?durable:bool -> t -> session_id:string -> message list -> unit
   val read_orphan_inbox_messages : t -> session_id:string -> message list
   (** Read orphan inbox messages without deleting. Returns [] when the orphan
       inbox does not exist or is empty. *)
