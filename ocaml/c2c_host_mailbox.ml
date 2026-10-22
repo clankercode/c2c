@@ -9,6 +9,7 @@ type binding = {
   thread_id : string;
   session_id : string;
   alias : string;
+  client_type : string option;
   workspace : string;
   broker_root : string;
   inbox_path : string;
@@ -34,9 +35,39 @@ let identity ~environment_id ~thread_id =
     ("c2c-host-mailbox-v1\000" ^ frame environment_id ^ frame thread_id))) in
   "host-" ^ digest, digest
 
+let supported_client_types =
+  [ "claude"; "codex"; "opencode"; "kimi"; "crush"; "grok"; "agy";
+    "hermes"; "cursor"; "muse" ]
+
+let normalize_client_type = function
+  | None -> None
+  | Some value ->
+      let value = String.lowercase_ascii (String.trim value) in
+      if value = "" || not (List.mem value supported_client_types)
+      then reject "invalid_client_type"
+      else Some value
+
+let starts_with ~prefix value =
+  String.length value >= String.length prefix
+  && String.sub value 0 (String.length prefix) = prefix
+
+let validate_alias ?client_type alias =
+  if not (C2c_name.is_valid alias) || B.is_reserved_system_alias alias then
+    reject "invalid_alias";
+  let folded = String.lowercase_ascii alias in
+  match client_type with
+  | Some client_type when B.is_banned_alias alias ->
+      let prefix = client_type ^ "-" in
+      if not (starts_with ~prefix folded)
+      then reject ("alias_namespace_mismatch:" ^ client_type)
+  | None when B.is_banned_alias alias ->
+      reject "reserved_alias_requires_client_namespace"
+  | _ -> ()
+
 let binding_to_json b = `Assoc [
   "environment_id", `String b.environment_id; "thread_id", `String b.thread_id;
   "session_id", `String b.session_id; "alias", `String b.alias;
+  "client_type", (match b.client_type with None -> `Null | Some v -> `String v);
   "workspace", `String b.workspace; "broker_root", `String b.broker_root;
   "inbox_path", `String b.inbox_path; "generation", `String b.generation;
   "owner_pid", `Int b.owner_pid; "owner_pid_start_time", `Int b.owner_pid_start_time ]
@@ -57,16 +88,20 @@ let stored_of_json broker ~environment_id ~thread_id json =
   let b = json |> member "binding" in
   let text key = b |> member key |> to_string in
   let binding = { environment_id = text "environment_id"; thread_id = text "thread_id";
-    session_id = text "session_id"; alias = text "alias"; workspace = text "workspace";
+    session_id = text "session_id"; alias = text "alias";
+    client_type = (match b |> member "client_type" with `Null -> None | `String v -> Some v | _ -> reject "invalid_binding");
+    workspace = text "workspace";
     broker_root = text "broker_root"; inbox_path = text "inbox_path";
     generation = text "generation"; owner_pid = b |> member "owner_pid" |> to_int;
     owner_pid_start_time = b |> member "owner_pid_start_time" |> to_int } in
   if binding.environment_id <> environment_id || binding.thread_id <> thread_id
      || binding.session_id <> session_id || binding.broker_root <> B.root broker
      || binding.inbox_path <> B.inbox_path broker ~session_id
-     || not (C2c_name.is_valid binding.alias) || binding.generation = ""
+     || binding.generation = ""
      || binding.owner_pid <= 0
   then reject "invalid_binding";
+  let client_type = normalize_client_type binding.client_type in
+  validate_alias ?client_type binding.alias;
   let owner_id = json |> member "owner_id" |> to_string in
   require_text "owner_id" owner_id;
   { binding; owner_id; active = json |> member "active" |> to_bool }
@@ -179,7 +214,7 @@ let canonical_root ?(create = false) root =
   if create then C2c_io.mkdir_p_durable root;
   Unix.realpath root
 
-let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getppid ()) ?alias ?broker_root ?expected_broker_root () =
+let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getppid ()) ?alias ?client_type ?broker_root ?expected_broker_root () =
   let session_id, default_alias = identity ~environment_id ~thread_id in
   require_text "owner_id" owner_id;
   if owner_pid <= 0 then reject "invalid_owner_pid";
@@ -205,14 +240,20 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
   B.with_registry_lock broker (fun () ->
     recover_transition broker ~environment_id ~thread_id;
     let previous = read_state broker ~environment_id ~thread_id in
+    let client_type = normalize_client_type client_type in
     let alias = match alias, previous with
       | Some a, _ -> a | None, Some s -> s.binding.alias | None, None -> default_alias in
-    if not (C2c_name.is_valid alias) || B.is_reserved_system_alias alias
-       || B.is_banned_alias alias then reject "invalid_alias";
+    let client_type = match previous, client_type with
+      | Some state, None -> state.binding.client_type
+      | Some state, Some value when state.binding.client_type = Some value -> Some value
+      | Some _, Some _ -> reject "client_type_change_requires_new_identity"
+      | None, value -> value in
+    validate_alias ?client_type alias;
     let regs = B.load_registrations_strict broker in
     let old_reg = match previous with
       | Some s ->
           if alias <> s.binding.alias then reject "alias_change_requires_new_identity";
+          if client_type <> s.binding.client_type then reject "client_type_change_requires_new_identity";
           owned_registration regs s.binding
       | None ->
           if List.exists (fun (r : registration) -> r.session_id = session_id
@@ -227,7 +268,7 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
     let generation = match previous with
       | Some s when unchanged -> s.binding.generation
       | _ -> B.generate_msg_id () in
-    let binding = { environment_id; thread_id; session_id; alias; workspace;
+    let binding = { environment_id; thread_id; session_id; alias; client_type; workspace;
       broker_root = root; inbox_path = B.inbox_path broker ~session_id; generation;
       owner_pid; owner_pid_start_time } in
     if not unchanged then begin

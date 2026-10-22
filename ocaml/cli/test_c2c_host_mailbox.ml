@@ -17,9 +17,9 @@ let rec remove path =
     Unix.rmdir path
   end else Sys.remove path
 let with_root f = let r = root () in Fun.protect ~finally:(fun () -> remove r) (fun () -> f r)
-let bind ?(owner_id="server-one") ?(thread_id="thread-one") ?alias root =
+let bind ?(owner_id="server-one") ?(thread_id="thread-one") ?alias ?client_type root =
   H.bind ~environment_id:"environment" ~thread_id ~workspace:root ~owner_id
-    ~broker_root:root ~owner_pid:(Unix.getpid ()) ?alias () |> binding
+    ~broker_root:root ~owner_pid:(Unix.getpid ()) ?alias ?client_type () |> binding
 let generation b = text b "generation"
 let sid b = text b "session_id"
 let alias b = text b "alias"
@@ -37,6 +37,12 @@ let rejects f =
   | exception Invalid_argument _ -> ()
   | exception Yojson.Json_error _ -> ()
   | exception Yojson.Safe.Util.Type_error _ -> ()
+
+let rejects_reason expected f =
+  match f () with
+  | _ -> Alcotest.fail "operation should fail closed"
+  | exception H.Rejected reason -> Alcotest.(check string) "actionable rejection" expected reason
+  | exception exn -> Alcotest.failf "unexpected exception: %s" (Printexc.to_string exn)
 let local root b ?(ephemeral=false) ?(deferrable=false) content =
   B.enqueue_message (B.create ~root) ~from_alias:"sender" ~to_alias:(alias b)
     ~content ~ephemeral ~deferrable ()
@@ -131,6 +137,29 @@ let test_lifecycle () = with_root (fun root ->
   Alcotest.(check int) "unbind retained mail" 1 (List.length (fields (peek root reopened) "messages"));
   Alcotest.(check int) "other thread remains registered" 1
     (List.length (List.filter (fun r -> r.session_id = sid other) (B.load_registrations (B.create ~root)))))
+
+let test_reserved_client_namespaces () = with_root (fun root ->
+  let hermes = bind ~thread_id:"hermes-thread" ~alias:"hermes-telegram-inbound"
+      ~client_type:"hermes" root in
+  Alcotest.(check string) "explicit namespace permits own reserved prefix"
+    "hermes-telegram-inbound" (alias hermes);
+  let codex = bind ~thread_id:"codex-thread" ~alias:"codex-background"
+      ~client_type:"codex" root in
+  Alcotest.(check string) "other supported namespace permits own prefix"
+    "codex-background" (alias codex);
+  rejects_reason "alias_namespace_mismatch:hermes"
+    (fun () -> bind ~thread_id:"wrong-thread" ~alias:"codex-impersonation"
+       ~client_type:"hermes" root);
+  rejects_reason "reserved_alias_requires_client_namespace"
+    (fun () -> bind ~thread_id:"missing-namespace" ~alias:"muse-gateway" root);
+  rejects_reason "invalid_client_type"
+    (fun () -> bind ~thread_id:"unknown-client" ~alias:"hermes-gateway"
+       ~client_type:"unknown" root);
+  rejects_reason "registration_conflict"
+    (fun () -> bind ~thread_id:"collision" ~alias:"hermes-telegram-inbound"
+       ~client_type:"hermes" root);
+  check "independent namespaced bindings retain separate mailboxes" true
+    (sid hermes <> sid codex))
 
 let test_selected_ack () = with_root (fun root ->
   let b = bind root in let broker = B.create ~root in
@@ -642,6 +671,7 @@ let test_cli () = with_root (fun root ->
 let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
   Alcotest.test_case name `Quick f) [
   "stable framed identity",test_identity; "lifecycle and fencing",test_lifecycle;
+  "reserved client namespaces",test_reserved_client_namespaces;
   "expected broker root guards workspace moves",test_expected_broker_root;
   "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
   "foreign ownership and corruption",test_conflicts_and_corruption;
