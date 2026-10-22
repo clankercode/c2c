@@ -88,6 +88,11 @@ c2c relay enable --url https://relay.c2c.im
 c2c start relay-connect
 ```
 
+Private relay destinations additionally require a recipient-issued contact
+grant imported by the sender. The normal CLI and MCP send paths use that grant;
+replies require separate reverse authority. See [private relay contacts](../../relay-contacts/).
+This does not change local delivery or grant an inbound message approval authority.
+
 The machine relay connector owns leases and remote publication; `c2c t3
 service` remains the sole owner of the local T3 aliases. Relay outage degrades
 remote reachability without stopping local delivery. Retirement removes only

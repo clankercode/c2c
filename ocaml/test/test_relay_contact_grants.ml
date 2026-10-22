@@ -779,6 +779,123 @@ module Make_tests (B : BACKEND) = struct
       | `Accepted _ -> ()
       | _ -> Alcotest.fail "grant must still work after failed foreign revoke")
 
+  (* B370: destination guards run before replay lookup and leave the message
+     id usable after denial. Aliases sharing an owner are still distinct. *)
+  let test_destination_binding_precedes_dedup () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let recipient_pk = gen_pk () in
+      let sender_pk = gen_pk () in
+      let other_pk = gen_pk () in
+      let rn, rs = register_peer t ~alias:"zzbind-r" ~pk:recipient_pk in
+      ignore (register_peer t ~alias:"zzbind-r2" ~pk:recipient_pk);
+      ignore (register_peer t ~alias:"zzbind-s" ~pk:sender_pk);
+      let set_host host =
+        let status, _ = B.register t ~node_id:rn ~session_id:rs
+            ~alias:"zzbind-r" ~identity_pk:recipient_pk
+            ~opaque_host_id:(Some host) () in
+        Alcotest.(check string) "recipient host registration" "ok" status
+      in
+      let issued = issue_ok t ~recipient_pk ~delivery_alias:"zzbind-r" ~sender_pk
+          ~expires_at:(Unix.gettimeofday () +. 3600.) () in
+      let admit pk alias host =
+        B.admit_contact_delivery t ~verified_sender_alias:"zzbind-s"
+          ~verified_sender_identity_pk:sender_pk ~grant_secret:issued.grant_secret
+          ~message_id:"m-bind" ~content:"bound"
+          ?expected_recipient_pk:pk ?expected_delivery_alias:alias
+          ?expected_recipient_host_id:host ()
+      in
+      let invalid =
+        [ (Some other_pk, Some "zzbind-r", None);
+          (Some recipient_pk, Some "zzbind-r2", None);
+          (Some recipient_pk, None, None);
+          (None, Some "zzbind-r", None);
+          (Some "short", Some "zzbind-r", None);
+          (Some recipient_pk, Some "zzbind-r@012345abcdef", None);
+          (Some recipient_pk, Some "zzbind-r", Some "fedcba654321");
+          (Some recipient_pk, Some "zzbind-r", Some "relay-name");
+          (None, None, Some "012345abcdef") ]
+      in
+      let deny_all () =
+        List.iter (fun (pk, alias, host) ->
+          match admit pk alias host with
+          | `Rejected -> ()
+          | _ -> Alcotest.fail "destination mismatch accepted or deduplicated")
+          invalid
+      in
+      deny_all ();
+      Alcotest.(check int) "destination denials leave inbox empty" 0
+        (List.length (B.peek_inbox t ~node_id:rn ~session_id:rs));
+      Alcotest.(check int) "destination denials leave DLQ empty" 0
+        (List.length (B.dead_letter t));
+      let bound () = admit (Some recipient_pk) (Some "zzbind-r")
+          (Some "012345abcdef") in
+      (match bound () with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "host-bound send requires a registered recipient host");
+      set_host "012345abcdef";
+      (match bound () with
+       | `Accepted _ -> ()
+       | _ -> Alcotest.fail "denials must not consume the message id");
+      deny_all ();
+      (match bound () with
+       | `Duplicate _ -> ()
+       | _ -> Alcotest.fail "correctly bound retry must deduplicate");
+      Alcotest.(check int) "mismatched retries leave one inbox row" 1
+        (List.length (B.peek_inbox t ~node_id:rn ~session_id:rs));
+      set_host "fedcba654321";
+      (match bound () with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "host change must invalidate even an accepted retry");
+      (* Relay-name convenience routes omit host expectations. *)
+      (match admit (Some recipient_pk) (Some "zzbind-r") None with
+       | `Duplicate _ -> ()
+       | _ -> Alcotest.fail "key and alias binding does not require a host"))
+
+  let test_sender_return_route_from_lease () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let recipient_pk = gen_pk () in
+      let sender_pk = gen_pk () in
+      let rn, rs = register_peer t ~alias:"zzroute-r" ~pk:recipient_pk in
+      let reg_sender ~alias ~pk ~host ~ttl =
+        let status, _ = B.register t ~node_id:("n-" ^ alias)
+            ~session_id:("s-" ^ alias) ~alias ~identity_pk:pk
+            ~opaque_host_id:(Some host) ~ttl () in
+        Alcotest.(check string) "sender route registration" "ok" status
+      in
+      reg_sender ~alias:"zzroute-s" ~pk:sender_pk ~host:"012345abcdef" ~ttl:3600.;
+      reg_sender ~alias:"zzroute-other" ~pk:(gen_pk ())
+        ~host:"fedcba654321" ~ttl:3600.;
+      reg_sender ~alias:"zzroute-malformed" ~pk:sender_pk
+        ~host:"not-a-host@spoof" ~ttl:3600.;
+      reg_sender ~alias:"zzroute-dead" ~pk:sender_pk
+        ~host:"fedcba654321" ~ttl:(-1.);
+      ignore (register_peer t ~alias:"zzroute-old" ~pk:sender_pk);
+      let issued = issue_ok t ~recipient_pk ~delivery_alias:"zzroute-r" ~sender_pk
+          ~expires_at:(Unix.gettimeofday () +. 3600.) () in
+      List.iteri (fun i (alias, expected) ->
+        let route = B.contact_sender_route t ~verified_sender_alias:alias
+            ~verified_sender_identity_pk:sender_pk () in
+        Alcotest.(check string) "relay-derived route" expected route;
+        (match B.admit_contact_delivery t ~verified_sender_alias:alias
+            ~verified_sender_identity_pk:sender_pk ~grant_secret:issued.grant_secret
+            ~message_id:("m-route-" ^ string_of_int i) ~content:"route" () with
+         | `Accepted _ -> ()
+         | _ -> Alcotest.fail "sender route metadata must not tighten grant policy");
+        match B.poll_inbox t ~node_id:rn ~session_id:rs with
+        | [ `Assoc fields ] ->
+          Alcotest.(check bool) "inbox uses relay-derived return route" true
+            (List.assoc_opt "from_alias" fields = Some (`String expected))
+        | _ -> Alcotest.fail "expected exactly one sender-route inbox row")
+        [ ("zzroute-s", "zzroute-s@012345abcdef");
+          ("zzroute-s@fedcba654321", "zzroute-s@012345abcdef");
+          ("zzroute-other", "zzroute-other");
+          ("zzroute-malformed", "zzroute-malformed");
+          ("zzroute-dead", "zzroute-dead");
+          ("zzroute-old", "zzroute-old");
+          ("zzroute-absent", "zzroute-absent") ])
+
   let cases =
     [ ("issue returns 32-byte secret + grant_id",
        `Quick, test_issue_returns_32_byte_secret_and_grant_id);
@@ -816,6 +933,10 @@ module Make_tests (B : BACKEND) = struct
        `Quick, test_concurrent_revoke_and_admit_linearised);
       ("foreign owner cannot revoke",
        `Quick, test_foreign_owner_cannot_revoke);
+      ("destination binding checked before dedup and delivery",
+       `Quick, test_destination_binding_precedes_dedup);
+      ("sender return route derives only from live identity-bound lease",
+       `Quick, test_sender_return_route_from_lease);
     ]
 end
 

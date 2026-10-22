@@ -1256,6 +1256,9 @@ let fixture_health =
       ("auth_mode", `String "dev");
       (* B265/B266 health ads — keep fake/real F5c vectors aligned. *)
       ("contact_protocol", `Int 1);
+      ("contact_destination_binding", `Int 1);
+      ("allow_contact_http", `Bool false);
+      ("contact_transport_policy", `String "confidential_required");
       ("private_reachability", `String "process_local");
       ("dev_mode", `Bool true);
       ("production_claims", `Bool false);

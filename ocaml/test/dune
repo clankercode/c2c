@@ -1016,3 +1016,8 @@
  (name test_c2c_relay_t006_ownership)
  (modules test_c2c_relay_t006_ownership)
  (libraries c2c_mcp relay_test_support_real alcotest yojson unix lwt.unix cohttp-lwt-unix))
+
+(test
+ (name test_relay_contact_store)
+ (modules test_relay_contact_store)
+ (libraries c2c_mcp alcotest yojson unix sqlite3))

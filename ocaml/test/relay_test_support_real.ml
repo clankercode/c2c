@@ -50,14 +50,19 @@ let loopback_socket () =
   | _ -> Lwt.fail_with "loopback_socket: expected INET socket"
 
 (* Serve the production relay callback on a loopback port for the duration
-   of [f ~base_url ~relay]. Fresh InMemoryRelay per bracket; dev auth by
+   of [f ~base_url ~relay]. Fresh backend per bracket; dev auth by
    default (token = None) — pass [?token] for a token-configured
    (production auth mode) bracket, e.g. the B116 binding-revoke suite;
-   optional caller-supplied rate limiter. *)
-let with_server ?token ?(native_tls = false) ?rate_limiter f =
+   optional caller-supplied rate limiter and explicit contact HTTP policy.
+   The functor lets contact ingress tests pin both backend projections. *)
+module Make (R : Relay_backend_contract.RELAY) = struct
+module RS = Relay.Relay_server (R)
+
+let with_server ?token ?(native_tls = false) ?(allow_contact_http = false)
+    ?rate_limiter ?persist_dir f =
   Lwt_main.run
     (loopback_socket () >>= fun (fd, port) ->
-     let relay = Relay.InMemoryRelay.create () in
+     let relay = R.create ?persist_dir () in
      let rate_limiter =
        match rate_limiter with
        | Some rl -> rl
@@ -65,8 +70,8 @@ let with_server ?token ?(native_tls = false) ?rate_limiter f =
      in
      let stop, wake_stop = Lwt.wait () in
      let callback (conn, _) req body =
-       RS.make_callback relay token conn req body ?broker_root:None
-         ~native_tls ~rate_limiter
+       RS.make_callback ~allow_contact_http relay token conn req body
+         ?broker_root:None ~native_tls ~rate_limiter
      in
      let spec = Cohttp_lwt_unix.Server.make ~callback () in
      let server =
@@ -79,6 +84,10 @@ let with_server ?token ?(native_tls = false) ?rate_limiter f =
        (fun () ->
           Lwt.wakeup_later wake_stop ();
           server))
+end
+
+module Memory = Make (Relay.InMemoryRelay)
+let with_server = Memory.with_server
 
 (* One HTTP call against the bracket's server; total — a non-JSON body
    yields [json = None] rather than raising, so fault-matrix suites can

@@ -139,14 +139,14 @@ let inbox_message_row_json ~(delivery_state : C2c_schema_v1.delivery_state)
     always [dm]: `c2c send` is the DM surface (rooms go via
     `c2c rooms send`), and remote targets may embed `@host` which the
     room classifier must not see. *)
-let cli_send_receipt_json ~ts ~from_alias ~to_ ~content
+let cli_send_receipt_json ?message_id ~ts ~from_alias ~to_ ~content
     ~(delivery_state : C2c_schema_v1.delivery_state) ?delivery_warning
     ~(legacy_target_fields : (string * Yojson.Safe.t) list)
     ?compacting_warning () : Yojson.Safe.t =
   let v1 : C2c_schema_v1.t =
     { C2c_schema_v1.schema_version = C2c_schema_v1.schema_version
     ; msg_type = C2c_schema_v1.Dm
-    ; message_id = None
+    ; message_id
     ; ts = Some ts
     ; from = { C2c_schema_v1.alias = from_alias; host_id = None; address = None }
     ; to_
@@ -190,7 +190,7 @@ let adapt_relay_dm_send_result ~from_alias ~to_alias ~content
       let v1 : C2c_schema_v1.t =
         { C2c_schema_v1.schema_version = C2c_schema_v1.schema_version
         ; msg_type = schema_v1_msg_type_of_recipient ~to_alias
-        ; message_id = None
+        ; message_id = (match List.assoc_opt "message_id" fields with Some (`String id) -> Some id | _ -> None)
         ; ts
         ; from =
             { C2c_schema_v1.alias = from_alias; host_id = None; address = None }

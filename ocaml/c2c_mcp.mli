@@ -548,7 +548,7 @@ module Broker : sig
       [Invalid_argument]. *)
 
   val enqueue_message_with_result :
-    t ->
+    ?message_id:string -> t ->
     from_alias:string ->
     to_alias:string ->
     content:string ->

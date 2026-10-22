@@ -624,7 +624,17 @@ let check_transport_security ~url ~health =
     | _ -> false
   in
   let mode = auth_mode_of_health health in
-  if mode = "prod" && not tls then
+  let http_exception = match health with
+    | Some (`Assoc fields) -> List.assoc_opt "allow_contact_http" fields = Some (`Bool true)
+    | _ -> false in
+  if not tls && http_exception then
+    { check_id = "relay.transport_security"
+    ; status = Inconclusive
+    ; message = "explicit LAN HTTP contact exception; no transport confidentiality"
+    ; detail = Some "The server permits plaintext. Each client must independently opt in; signatures and recipient consent remain required."
+    ; fix_command = Some "use HTTPS outside a trusted LAN"
+    ; docs_url = Some docs_url }
+  else if mode = "prod" && not tls then
     { check_id = "relay.transport_security"
     ; status = Fail
     ; message =

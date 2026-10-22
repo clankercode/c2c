@@ -1262,6 +1262,7 @@ type outbox_entry = {
   ob_to : string;
   ob_content : string;
   ob_msg_id : string option;
+  ob_relay_url : string option; (* immutable destination for this send intent *)
   ob_attempts : int;        (* cumulative send attempts *)
   ob_enqueued_at : float;    (* Unix.gettimeofday at creation *)
   ob_last_error : string option; (* most recent error class *)
@@ -1287,6 +1288,8 @@ let read_outbox broker_root =
               let to_ = match json |> member "to_alias" with `String s -> s | _ -> "" in
               let content = match json |> member "content" with `String s -> s | _ -> "" in
               let msg_id = match json |> member "message_id" with `String s -> Some s | _ -> None in
+              let relay_url = match json |> member "relay_url" with `String s -> Some s | _ -> None in
+              if from = "" || to_ = "" then failwith "invalid_outbox_entry";
               (* New fields with defaults for backward compat.
                  Legacy entries (pre-fix) have no attempts/enqueued_at — default
                  attempts=0 (retry from scratch) and enqueued_at=now (don't
@@ -1300,9 +1303,9 @@ let read_outbox broker_root =
               in
               let last_error = match json |> member "last_error" with `String s -> Some s | _ -> None in
               loop ({ ob_from = from; ob_to = to_; ob_content = content;
-                      ob_msg_id = msg_id; ob_attempts = attempts;
+                      ob_msg_id = msg_id; ob_relay_url = relay_url; ob_attempts = attempts;
                       ob_enqueued_at = enqueued_at; ob_last_error = last_error } :: acc)
-            with _ -> loop acc
+            with _ -> close_in_noerr ic; failwith "outbox_invalid_entry_preserved"
     in
     loop []
 
@@ -1332,12 +1335,13 @@ let write_outbox broker_root entries =
         ["from_alias", `String e.ob_from;
          "to_alias", `String e.ob_to;
          "content", `String e.ob_content]
+        @ (match e.ob_relay_url with Some u -> ["relay_url", `String u] | None -> [])
         @ msg_id_assoc @ extra
       ) in
       Buffer.add_string buf (Yojson.Safe.to_string json ^ "\n")
     ) entries;
     match C2c_io.write_file_atomic path (Buffer.contents buf) with
-    | Ok () -> ()
+    | Ok () -> C2c_io.fsync_file_and_parent path
     | Error msg -> failwith msg
 
 (* Append a single entry to the DLQ (append-only). *)
@@ -1360,6 +1364,7 @@ let append_dlq_entry broker_root entry ~reason =
     ["from_alias", `String entry.ob_from;
      "to_alias", `String entry.ob_to;
      "content", `String entry.ob_content]
+    @ (match entry.ob_relay_url with Some u -> ["relay_url", `String u] | None -> [])
     @ msg_id_assoc @ extra
   ) in
   let line = Yojson.Safe.to_string json ^ "\n" in
@@ -2148,29 +2153,29 @@ let touch_connector_last_sync broker_root =
 (** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
     Used by enqueue_message when the target alias is remote (contains '@'). *)
 let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id () =
+  let message_id = Option.value message_id ~default:(Relay_contact_send.new_message_id ()) in
+  let relay_url = Relay_activation.url () in
+  let identity = match Relay_contact_send.load_identity () with Ok id -> Some id | Error _ -> None in
+  (* Preparing does no network I/O. Commit route/grant/ID before a connector can
+     observe this line; never silently substitute a new grant during retry. *)
+  (match relay_url with
+   | None -> () (* historical offline staging; first sync pins before sending *)
+   | Some url ->
+     (match Relay_contact_send.prepare ~relay_url:url ~to_alias ~identity
+         ~from_alias ~content ~message_id () with
+      | Ok _ -> () | Error code -> invalid_arg ("contact send held: " ^ code)));
   let path = outbox_path broker_root in
-  let now = Unix.gettimeofday () in
-  let msg_id_assoc = match message_id with
-    | Some m -> ["message_id", `String m]
-    | None -> []
-  in
   let json = `Assoc (
-    ["from_alias", `String from_alias;
-     "to_alias", `String to_alias;
-     "content", `String content;
-     "attempts", `Int 1;
-     "enqueued_at", `Float now]
-    @ msg_id_assoc
-  ) in
+    ["from_alias", `String from_alias; "to_alias", `String to_alias;
+     "content", `String content; "message_id", `String message_id;
+     "attempts", `Int 1; "enqueued_at", `Float (Unix.gettimeofday ())]
+    @ (match relay_url with Some u -> ["relay_url", `String u] | None -> [])) in
   let line = Yojson.Safe.to_string json ^ "\n" in
-  (* B305: the enqueue path used to append with no lock, so an entry landing
-     inside sync's read→rewrite window was truncated away by write_outbox.
-     Same sidecar and Unix.lockf primitive as with_outbox_lock; fcntl record
-     locks are per-process, so same-process re-acquisition cannot deadlock. *)
   with_outbox_lock broker_root (fun () ->
-    let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o644 path in
+    let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o600 path in
     Fun.protect ~finally:(fun () -> close_out oc)
-      (fun () -> output_string oc line))
+      (fun () -> output_string oc line; flush oc; Unix.fsync (Unix.descr_of_out_channel oc)));
+  C2c_io.fsync_path (Filename.dirname path)
 
 (* ---------------------------------------------------------------------------
  * HTTP client (inline — minimal, matches Relay_client in relay.ml)
@@ -2525,17 +2530,16 @@ module Relay_client = struct
     else from_alias ^ "@" ^ host_id
 
   let send t ~from_alias ~to_alias ~content ?message_id () =
+    let message_id = Option.value message_id ~default:(Relay_contact_send.new_message_id ()) in
     let host_id = try Host_id.compute_host_hash () with _ -> "" in
-    let base = [
-      ("from_alias", `String (sender_reply_route ~host_id ~to_alias from_alias));
-      ("to_alias", `String to_alias);
-      ("content", `String content);
-    ] in
-    let body = match message_id with
-      | Some mid -> ("message_id", `String mid) :: base
-      | None -> base
-    in
-    post t "/send" ~alias:from_alias (`Assoc body)
+    Relay_contact_send.dispatch ~relay_url:t.base_url ~identity:t.identity
+      ~from_alias ~sender_route:(sender_reply_route ~host_id ~to_alias from_alias)
+      ~to_alias ~content ~message_id
+      ~request:(fun ~meth ~path ~body ~auth ->
+        (* Keep this client's TLS/timeout behavior; sign exact contact bytes. *)
+        let shared = Relay.Relay_client.make ?token:t.token ~timeout:t.timeout
+            ?ca_bundle:t.ca_bundle t.base_url in
+        Relay.Relay_client.request shared ~meth ~path ?body ?auth_override:auth ()) ()
 
   let poll_inbox t ~node_id ~session_id ?(alias : string option) () =
     post t "/poll_inbox" ?alias (`Assoc [
@@ -3271,7 +3275,12 @@ let sync (t : t) : sync_result Lwt.t =
      also serialise with any other outbox reader/writer. *)
   let outbox_forwarded, outbox_failed, _remaining_outbox, dlqed, send_errors =
     with_outbox_lock t.broker_root (fun () ->
-      let outbox = read_outbox t.broker_root in
+      let outbox = read_outbox t.broker_root |> List.map (fun entry ->
+        { entry with ob_msg_id = Some (Option.value entry.ob_msg_id
+              ~default:(Relay_contact_send.new_message_id ()));
+          ob_relay_url = Some (Option.value entry.ob_relay_url ~default:t.relay_url) }) in
+      (* Migrate legacy IDs and destinations durably before the first HTTP call. *)
+      write_outbox t.broker_root outbox;
       (* B297: the send arm knows the sender alias even though the relay's
          /send does not require the sender's lease. *)
       let mk_send_err ?code ~from detail : pass_error =
@@ -3284,7 +3293,14 @@ let sync (t : t) : sync_result Lwt.t =
           (* Keep the entry for the next pass; do not burn attempts on 429. *)
           (fwd, failed, entry :: remaining, dlqed, errs)
         else begin
-        let json = Lwt_main.run (Relay_client.send client
+        let same_relay = match entry.ob_relay_url with
+          | None -> false
+          | Some u -> (match Relay_contact_store.canonical_url u,
+                              Relay_contact_store.canonical_url t.relay_url with
+              | Ok a, Ok b -> a = b | _ -> false) in
+        let json = if not same_relay then
+          Relay_contact_send.error "outbox_relay_changed_original_intent_preserved"
+        else Lwt_main.run (Relay_client.send client
           ~from_alias:entry.ob_from
           ~to_alias:entry.ob_to
           ~content:entry.ob_content
@@ -3292,6 +3308,11 @@ let sync (t : t) : sync_result Lwt.t =
         note_observation ~sender:(Some entry.ob_from) json;
         if json_bool_member ~key:"ok" json then
           (fwd + 1, failed, remaining, dlqed, errs)
+        else if member_or_null "error_code" json = `String "contact_send_held"
+             || member_or_null "error_code" json = `String "contact_unauthorised" then
+          (fwd, failed + 1, {entry with ob_last_error = Some "contact_send_held"} :: remaining,
+           dlqed, mk_send_err ~code:"contact_send_held" ~from:entry.ob_from
+             "contact send held; check imported grant, identity and original relay; pending mail preserved" :: errs)
         else if response_is_rate_limited json then
           (* B244: rate-limit is not a permanent/attempt failure — keep the
              entry unchanged so we do not burn attempt budget while throttled. *)

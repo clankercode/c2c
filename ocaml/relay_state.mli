@@ -115,7 +115,7 @@ val state_to_string : state -> string
     write the machine-wide file the label denied. So the line names the file
     rather than guessing a scope; that is true in every branch and tells the
     operator where to look. The payload is the display path. *)
-type relay_config_location =
+type relay_config_location = Relay_config_location.t =
   | Relay_config_machine of string  (** [$HOME/.config/c2c/relay.json]. *)
   | Relay_config_repo of string
       (** [<C2C_MCP_BROKER_ROOT>/relay.json]. Named by the env var, not

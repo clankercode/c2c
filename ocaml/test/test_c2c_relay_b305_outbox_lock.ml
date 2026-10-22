@@ -197,7 +197,7 @@ let test_write_outbox_preserves_file_mode () =
   Unix.chmod path 0o600;
   Conn.write_outbox tmp
     [ { Conn.ob_from = "a"; ob_to = "b@h"; ob_content = "new";
-        ob_msg_id = None; ob_attempts = 1; ob_enqueued_at = 0.0;
+        ob_msg_id = None; ob_relay_url = None; ob_attempts = 1; ob_enqueued_at = 0.0;
         ob_last_error = None } ];
   Alcotest.(check int) "outbox mode preserved across rewrite" 0o600
     ((Unix.stat path).st_perm)

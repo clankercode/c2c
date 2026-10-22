@@ -110,6 +110,8 @@ module Relay_client : sig
   val send_signed :
     t -> from_alias:string -> to_alias:string -> content:string ->
     auth_header:string -> ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
+  val send_with_identity : t -> ?identity:Relay_identity.t -> from_alias:string ->
+    to_alias:string -> content:string -> ?message_id:string -> unit -> Yojson.Safe.t Lwt.t
   val poll_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val poll_inbox_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
   val peek_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
@@ -733,6 +735,12 @@ end = struct
       | None -> base
     in
     post_auth t "/send" (`Assoc body) auth_header
+
+  let send_with_identity t ?identity ~from_alias ~to_alias ~content ?message_id () =
+    let message_id = Option.value message_id ~default:(Relay_contact_send.new_message_id ()) in
+    Relay_contact_send.dispatch ~relay_url:t.base_url ~identity ~from_alias
+      ~sender_route:from_alias ~to_alias ~content ~message_id
+      ~request:(fun ~meth ~path ~body ~auth -> request t ~meth ~path ?body ?auth_override:auth ()) ()
 
   let poll_inbox t ~node_id ~session_id =
     post t "/poll_inbox" (`Assoc [

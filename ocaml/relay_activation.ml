@@ -27,20 +27,20 @@ let default_public_relay_url = "https://relay.c2c.im"
 (* Same three branches as the CLI has always used, but KEEPING which branch was
    taken: surfaces that report on the relay config name the file rather than
    claim a scope, because only the middle branch is repo-local. *)
-let config_location () : Relay_state.relay_config_location =
+let config_location () : Relay_config_location.t =
   match Sys.getenv_opt "C2C_RELAY_CONFIG" with
-  | Some p when p <> "" -> Relay_state.Relay_config_explicit p
+  | Some p when p <> "" -> Relay_config_location.Relay_config_explicit p
   | _ ->
       (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
        | Some d when String.trim d <> "" ->
-           Relay_state.Relay_config_repo
+           Relay_config_location.Relay_config_repo
              (Filename.concat (String.trim d) "relay.json")
        | _ ->
            let home = try Sys.getenv "HOME" with Not_found -> "." in
-           Relay_state.Relay_config_machine
+           Relay_config_location.Relay_config_machine
              (Filename.concat home ".config/c2c/relay.json"))
 
-let config_path () = Relay_state.relay_config_path_of (config_location ())
+let config_path () = Relay_config_location.path_of (config_location ())
 
 let load_config () =
   let path = config_path () in

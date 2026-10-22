@@ -49,6 +49,20 @@ let contact_decode_grant_id grant_id =
 
 let contact_scope_v1 = "dm-first-contact"
 
+(* B369: the server's explicit configuration wins over the environment.
+   Unknown/empty values fail closed; neither addresses nor request headers
+   infer this exception. Resolve once at server construction, not per request. *)
+let resolve_allow_contact_http ~configured ~env =
+  match configured with
+  | Some enabled -> enabled
+  | None ->
+    (match env with
+     | Some value ->
+       (match String.lowercase_ascii (String.trim value) with
+        | "1" | "true" | "yes" | "on" -> true
+        | _ -> false)
+     | None -> false)
+
 (* B262 §7.4: retain grant + message_id rows until max(expires,revoked)+7d. *)
 let contact_grant_gc_grace_s = 7. *. 86_400.
 
@@ -75,6 +89,55 @@ let contact_meta_of_rec (g : contact_grant_rec) : contact_grant_meta =
     generation = g.generation;
     label = g.label;
   }
+
+(* B370: legacy explicit-contact clients omit all destination expectations.
+   New clients bind key + bare route together; a host cannot stand alone.
+   Check this before dedup so a retry cannot bypass destination binding. *)
+let contact_destination_matches_grant (g : contact_grant_rec)
+    ~expected_recipient_pk ~expected_delivery_alias ~expected_recipient_host_id =
+  match expected_recipient_pk, expected_delivery_alias with
+  | None, None -> expected_recipient_host_id = None
+  | Some pk, Some alias ->
+    String.length pk = 32 && C2c_name.is_valid alias
+    && contact_fp_of_pk pk = g.recipient_identity_fp
+    && alias = g.delivery_alias
+    && (match expected_recipient_host_id with
+        | None -> true
+        | Some host -> C2c_name.is_opaque_host_id host)
+  | _ -> false
+
+let contact_sender_route_from_binding ~alias ~verified_sender_identity_pk
+    ~now ~identity_pk ~last_seen ~alive ~opaque_host_id =
+  match opaque_host_id with
+  | Some host when C2c_name.is_opaque_host_id host
+                   && identity_pk <> ""
+                   && identity_pk = verified_sender_identity_pk
+                   && alive && not (alias_released ~now ~last_seen) ->
+    alias ^ "@" ^ host
+  | _ -> alias
+
+(* Presence matters: null/non-string/partial bindings are not legacy calls. *)
+let contact_destination_expectations_of_json body =
+  let field name =
+    match body with `Assoc fields -> List.assoc_opt name fields | _ -> None
+  in
+  match field "expected_recipient_pk", field "expected_delivery_alias",
+        field "expected_recipient_host_id" with
+  | None, None, None -> Some (None, None, None)
+  | Some (`String encoded_pk), Some (`String alias), host ->
+    let host =
+      match host with
+      | None -> Some None
+      | Some (`String h) when C2c_name.is_opaque_host_id h -> Some (Some h)
+      | _ -> None
+    in
+    (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet encoded_pk,
+           host with
+     | Ok pk, Some host
+       when String.length pk = 32 && contact_b64url pk = encoded_pk
+            && C2c_name.is_valid alias -> Some (Some pk, Some alias, host)
+     | _ -> None)
+  | _ -> None
 
 (* --- InMemoryRelay --- *)
 
@@ -1887,8 +1950,28 @@ module InMemoryRelay : RELAY = struct
                }
            end))
 
+  let contact_sender_route_unlocked t ~verified_sender_alias
+      ~verified_sender_identity_pk ~now =
+    let alias, _ = normalize_relay_alias ~alias:verified_sender_alias
+        ~opaque_host_id:None in
+    match Hashtbl.find_opt t.leases alias with
+    | None -> alias
+    | Some lease ->
+      contact_sender_route_from_binding ~alias ~verified_sender_identity_pk ~now
+        ~identity_pk:(RegistrationLease.identity_pk lease)
+        ~last_seen:(RegistrationLease.last_seen lease)
+        ~alive:(RegistrationLease.is_alive lease)
+        ~opaque_host_id:(RegistrationLease.opaque_host_id lease)
+
+  let contact_sender_route t ~verified_sender_alias
+      ~verified_sender_identity_pk ?(now=Unix.gettimeofday ()) () =
+    with_lock t (fun () ->
+      contact_sender_route_unlocked t ~verified_sender_alias
+        ~verified_sender_identity_pk ~now)
+
   let admit_contact_delivery t ~verified_sender_alias
       ~verified_sender_identity_pk ~grant_secret ~message_id ~content
+      ?expected_recipient_pk ?expected_delivery_alias ?expected_recipient_host_id
       ?now () =
     with_lock t (fun () ->
       let now = match now with Some n -> n | None -> Unix.gettimeofday () in
@@ -1904,7 +1987,25 @@ module InMemoryRelay : RELAY = struct
            | None when g.scope <> contact_scope_v1 -> `Rejected
            | None ->
              let sender_fp = contact_fp_of_pk verified_sender_identity_pk in
-             if sender_fp <> g.sender_fp then `Rejected
+             let host_matches =
+               match expected_recipient_host_id with
+               | None -> true
+               | Some host ->
+                 (match Hashtbl.find_opt t.leases g.delivery_alias with
+                  | Some lease ->
+                    RegistrationLease.opaque_host_id lease = Some host
+                    && RegistrationLease.is_alive lease
+                    && not (alias_released ~now
+                              ~last_seen:(RegistrationLease.last_seen lease))
+                    && contact_fp_of_pk (RegistrationLease.identity_pk lease)
+                       = g.recipient_identity_fp
+                  | None -> false)
+             in
+             if sender_fp <> g.sender_fp
+                || not (contact_destination_matches_grant g
+                          ~expected_recipient_pk ~expected_delivery_alias
+                          ~expected_recipient_host_id)
+                || not host_matches then `Rejected
              else
                match Hashtbl.find_opt t.contact_grant_mids (verifier, message_id) with
                | Some ts -> `Duplicate (ts, g.delivery_alias)
@@ -1922,18 +2023,10 @@ module InMemoryRelay : RELAY = struct
                        || contact_fp_of_pk lease_pk <> g.recipient_identity_fp
                     then `Rejected
                     else begin
-                      (* optional defence-in-depth: live sender alias matches key *)
-                      (match Hashtbl.find_opt t.leases verified_sender_alias with
-                       | Some slease
-                         when RegistrationLease.is_alive slease
-                              && not
-                                   (alias_released ~now
-                                      ~last_seen:
-                                        (RegistrationLease.last_seen slease))
-                              && RegistrationLease.identity_pk slease
-                                 = verified_sender_identity_pk ->
-                         ()
-                       | _ -> ());
+                      let from_alias =
+                        contact_sender_route_unlocked t ~verified_sender_alias
+                          ~verified_sender_identity_pk ~now
+                      in
                       let key =
                         inbox_key (RegistrationLease.node_id lease)
                           (RegistrationLease.session_id lease)
@@ -1942,7 +2035,7 @@ module InMemoryRelay : RELAY = struct
                         `Assoc
                           [
                             ("message_id", `String message_id);
-                            ("from_alias", `String verified_sender_alias);
+                            ("from_alias", `String from_alias);
                             ("to_alias", `String g.delivery_alias);
                             ("content", `String content);
                             ("ts", `Float now);
@@ -4720,8 +4813,36 @@ end = struct
             Result.Error
               ("contact_grant_rotate_failed: " ^ Printexc.to_string exn))
 
+  let contact_sender_route_unlocked t ~verified_sender_alias
+      ~verified_sender_identity_pk ~now =
+    let alias, _ = normalize_relay_alias ~alias:verified_sender_alias
+        ~opaque_host_id:None in
+    with_stmt t.db
+      "SELECT identity_pk, last_seen, ttl, opaque_host_id
+         FROM secure_leases_v2 WHERE alias = ?"
+      (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        if Sqlite3.step stmt <> Rc.ROW then alias
+        else
+          let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+          let last_seen = data_to_float_default (Sqlite3.column stmt 1) in
+          let ttl = data_to_float_default (Sqlite3.column stmt 2) in
+          let opaque_host_id =
+            Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3)
+          in
+          contact_sender_route_from_binding ~alias ~verified_sender_identity_pk
+            ~now ~identity_pk ~last_seen ~alive:(last_seen +. ttl >= now)
+            ~opaque_host_id:(Some opaque_host_id))
+
+  let contact_sender_route t ~verified_sender_alias
+      ~verified_sender_identity_pk ?(now=Unix.gettimeofday ()) () =
+    with_lock t (fun () ->
+      contact_sender_route_unlocked t ~verified_sender_alias
+        ~verified_sender_identity_pk ~now)
+
   let admit_contact_delivery t ~verified_sender_alias
       ~verified_sender_identity_pk ~grant_secret ~message_id ~content
+      ?expected_recipient_pk ?expected_delivery_alias ?expected_recipient_host_id
       ?now () =
     with_lock t (fun () ->
       let conn = t.db in
@@ -4742,7 +4863,30 @@ end = struct
                  let sender_fp =
                    contact_fp_of_pk verified_sender_identity_pk
                  in
-                 if sender_fp <> g.sender_fp then `Rejected
+                 let host_matches =
+                   match expected_recipient_host_id with
+                   | None -> true
+                   | Some host ->
+                     with_stmt conn
+                       "SELECT identity_pk, last_seen, ttl, opaque_host_id
+                          FROM secure_leases_v2 WHERE alias = ?"
+                       (fun stmt ->
+                         Sqlite3.bind_text stmt 1 g.delivery_alias |> ignore;
+                         if Sqlite3.step stmt <> Rc.ROW then false
+                         else
+                           let pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+                           let last_seen = data_to_float_default (Sqlite3.column stmt 1) in
+                           let ttl = data_to_float_default (Sqlite3.column stmt 2) in
+                           let actual_host = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
+                           actual_host = host && last_seen +. ttl >= now
+                           && not (alias_released ~now ~last_seen)
+                           && contact_fp_of_pk pk = g.recipient_identity_fp)
+                 in
+                 if sender_fp <> g.sender_fp
+                    || not (contact_destination_matches_grant g
+                              ~expected_recipient_pk ~expected_delivery_alias
+                              ~expected_recipient_host_id)
+                    || not host_matches then `Rejected
                  else begin
                    (* Idempotency first: existing (verifier, message_id). *)
                    let prior = ref None in
@@ -4816,6 +4960,10 @@ end = struct
                                   <> g.recipient_identity_fp
                        then `Rejected
                        else begin
+                         let from_alias =
+                           contact_sender_route_unlocked t ~verified_sender_alias
+                             ~verified_sender_identity_pk ~now
+                         in
                          with_stmt conn
                            "INSERT INTO inboxes
                               (node_id, session_id, message_id, from_alias,
@@ -4825,7 +4973,7 @@ end = struct
                              Sqlite3.bind_text ins 1 node_id |> ignore;
                              Sqlite3.bind_text ins 2 session_id |> ignore;
                              Sqlite3.bind_text ins 3 message_id |> ignore;
-                             Sqlite3.bind_text ins 4 verified_sender_alias
+                             Sqlite3.bind_text ins 4 from_alias
                              |> ignore;
                              Sqlite3.bind_text ins 5 g.delivery_alias |> ignore;
                              Sqlite3.bind_text ins 6 content |> ignore;
@@ -5055,7 +5203,11 @@ let format_heartbeat_line ~uptime_s ~peer_count ~ws_subs ~heap_words ~rss_kb
     heap_words (heap_words * (Sys.word_size / 8) / 1024) rss_str
 
 module Relay_server(R : RELAY) : sig
+  (* Router policy defaults to false and never reads request opt-in headers.
+     Put the optional argument before positional ones so existing callers
+     erase its default rather than accidentally receiving a partial function. *)
   val make_callback :
+    ?allow_contact_http:bool ->
     R.t ->
     string option ->
     Conduit_lwt_unix.flow ->
@@ -5096,6 +5248,8 @@ module Relay_server(R : RELAY) : sig
     Yojson.Safe.t ->
     Cohttp_lwt_unix.Server.response Lwt.t
 
+  (* B369: an explicit value overrides C2C_RELAY_ALLOW_CONTACT_HTTP;
+     omission reads it once, defaulting to false on absent/invalid input. *)
   val start_server :
     host:string ->
     port:int ->
@@ -5106,6 +5260,7 @@ module Relay_server(R : RELAY) : sig
     ?tls:[ `Cert_key of string * string ] ->
     ?allowlist:(string * string) list ->
     ?broker_root:string option ->
+    ?allow_contact_http:bool ->
     unit ->
     unit Lwt.t
 end = struct
@@ -5173,7 +5328,7 @@ end = struct
       (c >= '0' && c <= '9') || c = '_' || c = '-') s
 
 
-  let handle_health ~auth_mode ~private_reachability () =
+  let handle_health ~auth_mode ~private_reachability ~allow_contact_http () =
     (* B216: read the once-memoized git hash instead of forking
        `git rev-parse` per request. Precedence unchanged: RAILWAY_GIT_COMMIT_SHA
        (7-char prefix) > `git rev-parse --short HEAD` > "unknown". *)
@@ -5195,11 +5350,17 @@ end = struct
       ("auth_mode", `String auth_mode);
       (* B265/B266: contact grant protocol card (c2c-contact/1). *)
       ("contact_protocol", `Int 1);
+      ("contact_destination_binding", `Int 1);
+      ("allow_contact_http", `Bool allow_contact_http);
+      ("contact_transport_policy",
+       `String (if allow_contact_http then "plaintext_http_opt_in"
+                else "confidential_required"));
       (* B266: only durable SQLite backends claim consent_gated. *)
       ("private_reachability", `String private_reachability);
       ("dev_mode", `Bool dev_mode);
       ("production_claims",
-       `Bool (auth_mode = "prod" && private_reachability = "consent_gated"));
+       `Bool (auth_mode = "prod" && private_reachability = "consent_gated"
+              && not allow_contact_http));
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
         ("scheme", `String Pow.scheme_id);
@@ -5698,11 +5859,14 @@ end = struct
          | None -> reject_session_lease_missing ~verified:v ~node_id ~session_id)
       | None -> run_heartbeat ()
 
-  let handle_contact_deliver relay ~verified_alias ~token ~confidential_transport body =
+  let handle_contact_deliver relay ~verified_alias ~token ~confidential_transport
+      ~allow_contact_http body =
     (* B265: POST /contact/v1/deliver — recipient-issued grant admission.
        Tokenless (dev) relays refuse contact delivery (B262 §13.3).
        Production contact delivery requires confidential transport (B262 §10):
-       native TLS or trusted X-Forwarded-Proto=https/wss.
+       native TLS or trusted X-Forwarded-Proto=https/wss, unless the operator
+       explicitly enables B369's plaintext HTTP exception. The exception does
+       not claim confidentiality or change sender/recipient admission.
        Side effects only on `Accepted (not Duplicate/Rejected).
        G6: all admission denials share one external shape (contact_unauthorised)
        — no distinct messages for unknown/malformed/expired/revoked/dev/protocol. *)
@@ -5711,7 +5875,7 @@ end = struct
         (json_error_str err_contact_unauthorised "contact unauthorised")
     in
     if token = None then deny ()
-    else if not confidential_transport then deny ()
+    else if not (confidential_transport || allow_contact_http) then deny ()
     else
       match verified_alias with
       | None -> deny ()
@@ -5720,13 +5884,17 @@ end = struct
         let grant_secret_b64 = get_string body "grant_secret" in
         let message_id = get_string body "message_id" in
         let content = get_string body "content" in
+        let destination = contact_destination_expectations_of_json body in
         if protocol <> "c2c-contact/1" || grant_secret_b64 = ""
            || message_id = "" || content = "" then deny ()
         else
-          match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_secret_b64 with
-          | Error _ -> deny ()
-          | Ok grant_secret when String.length grant_secret <> 32 -> deny ()
-          | Ok grant_secret ->
+          match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_secret_b64,
+                destination with
+          | Error _, _ | _, None -> deny ()
+          | Ok grant_secret, _ when String.length grant_secret <> 32 -> deny ()
+          | Ok grant_secret,
+            Some (expected_recipient_pk, expected_delivery_alias,
+                  expected_recipient_host_id) ->
             match R.identity_pk_of relay ~alias:from_alias with
             | None -> deny ()
             | Some sender_pk ->
@@ -5734,6 +5902,8 @@ end = struct
                 R.admit_contact_delivery relay
                   ~verified_sender_alias:from_alias
                   ~verified_sender_identity_pk:sender_pk
+                  ?expected_recipient_pk ?expected_delivery_alias
+                  ?expected_recipient_host_id
                   ~grant_secret ~message_id ~content ()
               with
               | `Rejected -> deny ()
@@ -5747,6 +5917,10 @@ end = struct
               | `Accepted (ts, delivery_alias) ->
                 R.stats_note_message relay
                   ~from_alias:(stats_alias_key from_alias) ~ts;
+                let from_alias =
+                  R.contact_sender_route relay ~verified_sender_alias:from_alias
+                    ~verified_sender_identity_pk:sender_pk ~now:ts ()
+                in
                 (* G1 authorised path: push WS / short-queue / observer once. *)
                 Relay_ws_server.push_dm ~to_alias:delivery_alias ~from_alias
                   ~body:content ~ts;
@@ -7444,8 +7618,8 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
     | Domain_socket { fd } -> Some fd
     | _ -> None
 
-  let make_callback relay token conn req body ?(broker_root=None)
-      ~native_tls ~rate_limiter =
+  let make_callback ?(allow_contact_http=false) relay token conn req body
+      ?(broker_root=None) ~native_tls ~rate_limiter =
     let open Cohttp in
     let open Cohttp_lwt_unix in
     let uri = Request.uri req in
@@ -7882,7 +8056,7 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
       | `GET, "/health" ->
         let auth_mode = if token = None then "dev" else "prod" in
         let private_reachability = R.private_reachability_mode relay in
-        handle_health ~auth_mode ~private_reachability ()
+        handle_health ~auth_mode ~private_reachability ~allow_contact_http ()
 
       | `GET, "/stats" ->
         handle_stats relay
@@ -7942,7 +8116,7 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
              (json_error_str err_contact_unauthorised "contact unauthorised")
          | Ok j ->
            handle_contact_deliver relay ~verified_alias ~token
-             ~confidential_transport j)
+             ~confidential_transport ~allow_contact_http j)
 
       | `POST, "/send_all" ->
         let json = parse_body () in
@@ -8172,7 +8346,12 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
   (* B282: default GC interval is [default_gc_interval_s] (300s), not 0.
      Callers that need a disabled loop must pass ~gc_interval:0.0 explicitly. *)
   let start_server ~host ~port ~relay ~token ?(verbose=false)
-      ?(gc_interval=default_gc_interval_s) ?tls ?(allowlist=[]) ?broker_root () =
+      ?(gc_interval=default_gc_interval_s) ?tls ?(allowlist=[]) ?broker_root
+      ?allow_contact_http () =
+    let allow_contact_http =
+      resolve_allow_contact_http ~configured:allow_contact_http
+        ~env:(Sys.getenv_opt "C2C_RELAY_ALLOW_CONTACT_HTTP")
+    in
     (* B219: make exceptions carry backtraces so the top-level serve guard can
        log them (relay deaths were previously silent — no exn, no backtrace). *)
     Printexc.record_backtrace true;
@@ -8201,8 +8380,8 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
     let callback (conn, _) req body =
       Lwt.catch
         (fun () ->
-           make_callback relay token conn req body ~rate_limiter ?broker_root
-             ~native_tls:(tls <> None)
+           make_callback ~allow_contact_http relay token conn req body
+             ~rate_limiter ?broker_root ~native_tls:(tls <> None)
            >|= fun response -> `Response response)
         (function
           | Ws_subscribe_upgrade (ws_key, validated_alias, slot) ->
@@ -8256,6 +8435,18 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
     (match token with
      | Some _ -> Printf.printf "auth: Bearer token required\n%!"
      | None -> Printf.printf "auth: DISABLED (no token set — do not expose publicly)\n%!");
+    (if allow_contact_http then
+       Printf.printf
+         "contact transport: PLAINTEXT HTTP OPT-IN (allow_contact_http=true); \
+          confidentiality NOT guaranteed; signed senders + recipient grants \
+          still required\n%!"
+     else
+       Printf.printf
+         "contact transport: confidential transport required \
+          (allow_contact_http=false)\n%!");
+    (match token with
+     | None -> Printf.printf "contact delivery: DISABLED (no token set)\n%!"
+     | Some _ -> ());
     (* B114: report the effective signed-room-op mode at startup so the
        deployed configuration is operator-visible. *)
     (match Sys.getenv_opt "C2C_REQUIRE_SIGNED_ROOM_OPS", token with

@@ -363,6 +363,7 @@ let send_cmd =
      in
      (* B127: track enqueue classification so offline durable queue reports
         [queued_offline] instead of falsely claiming live delivery. *)
+     let message_id = Relay_contact_send.new_message_id () in
      let enqueue_status : C2c_mcp.Broker.enqueue_result option ref = ref None in
      let compacting_warning, json_target_fields, human_target =
        match target with
@@ -377,7 +378,7 @@ let send_cmd =
            (try
               let result =
                 C2c_mcp.Broker.enqueue_message_with_result broker ~from_alias
-                  ~to_alias ~content ~deferrable ~ephemeral ()
+                  ~to_alias ~content ~deferrable ~ephemeral ~message_id ()
               in
               enqueue_status := Some result;
               if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
@@ -554,6 +555,7 @@ let send_cmd =
          in
          print_json
            (C2c_utils.cli_send_receipt_json ~ts ~from_alias ~to_:to_v1
+              ?message_id:(if String.contains to_v1 '@' then Some message_id else None)
               ~content ~delivery_state:delivery_state_v1
               ?delivery_warning:delivery_warning_opt
               ~legacy_target_fields

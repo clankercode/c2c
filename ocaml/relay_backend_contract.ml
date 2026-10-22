@@ -232,6 +232,11 @@ module type RELAY = sig
     ?now:float ->
     unit ->
     (contact_issue_result, string) result
+  (** B370: expectations bind the signed destination to the grant before
+      replay lookup. [expected_recipient_pk] is 32 raw bytes (the HTTP body
+      carries base64url); key and bare alias must be supplied together.
+      An optional opaque host additionally binds the current recipient lease.
+      Omitting all three retains legacy explicit-contact delivery. *)
   val admit_contact_delivery :
     t ->
     verified_sender_alias:string ->
@@ -239,11 +244,20 @@ module type RELAY = sig
     grant_secret:string ->
     message_id:string ->
     content:string ->
+    ?expected_recipient_pk:string ->
+    ?expected_delivery_alias:string ->
+    ?expected_recipient_host_id:string ->
     ?now:float ->
     unit ->
     [ `Accepted of float * string
     | `Duplicate of float * string
     | `Rejected ]
+  (** B370: reply route derived only from a live, identity-bound sender
+      lease with a valid opaque host. Otherwise returns the bare alias;
+      this is presentation metadata and does not alter grant admission. *)
+  val contact_sender_route :
+    t -> verified_sender_alias:string -> verified_sender_identity_pk:string ->
+    ?now:float -> unit -> string
   val private_reachability_mode : t -> string
   (** B283/B271: process-lifetime prepared-statement cache size for the
       heartbeat [stmts=] field. SqliteRelay returns the real cache size;

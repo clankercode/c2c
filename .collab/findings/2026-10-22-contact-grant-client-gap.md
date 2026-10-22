@@ -1,6 +1,14 @@
 # Recipient contact grants: tested client path and Hermes routing limits
 
-## Result
+## Follow-up integration
+
+B369/B370 supersede this draft's explicit-only limitation. The draft was reused
+in `fix/p9-contact-integration`; current working changes add protected grant
+selection, shared CLI/MCP/outbox sends and independent explicit HTTP permissions.
+The account below describes the original draft, not final validation or install
+status. Exact-source buildbox and NAS/two-host receipts remain required.
+
+## Original result
 
 `c2c relay contact issue/list/revoke` existed but no shipping CLI command consumed a grant. Ordinary `relay dm send` and the broker connector still use `/send`, which intentionally refuses private recipients. This branch adds **explicit** `relay contact deliver`, not transparent grant lookup or a public-default change.
 

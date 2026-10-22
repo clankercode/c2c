@@ -328,6 +328,7 @@ let offline_delivery_warning to_alias =
     as the v1 field (same key/value the legacy receipt used). *)
 let build_send_receipt
       ~(pp_extras : pp_receipt_extras)
+      ~message_id
       ~ts
       ~from_alias
       ~to_alias
@@ -375,7 +376,7 @@ let build_send_receipt
   let v1 : C2c_schema_v1.t =
     { schema_version = C2c_schema_v1.schema_version
     ; msg_type = C2c_schema_v1.Dm
-    ; message_id = None
+    ; message_id
     ; ts = Some ts
     ; from = { alias = from_alias; host_id = None; address = None }
     ; to_ = to_alias
@@ -463,17 +464,18 @@ let send ~broker ~session_id_override ~arguments =
                     | `Reject msg ->
                         Lwt.return (tool_err msg)
                     | `Warn _ | `Allow ->
+                        let message_id = Relay_contact_send.new_message_id () in
                         match
                            try
-                             Some
+                             Ok
                                (Broker.enqueue_message_with_result delivery_broker
                                   ~from_alias ~to_alias ~content:s ~deferrable
-                                  ~ephemeral ())
-                           with Invalid_argument _ -> None
+                                  ~ephemeral ~message_id ())
+                           with Invalid_argument message -> Error message
                          with
-                         | None ->
-                             Lwt.return (tool_err (Printf.sprintf "send failed: alias '%s' is not registered; message not queued" to_alias))
-                         | Some enqueue_result ->
+                         | Error message ->
+                             Lwt.return (tool_err ("send failed: " ^ message))
+                         | Ok enqueue_result ->
                              (match session_id_override with
                               | Some sid -> Broker.touch_session broker ~session_id:sid
                               | None ->
@@ -510,6 +512,7 @@ let send ~broker ~session_id_override ~arguments =
                              in
                              let receipt =
                                build_send_receipt
+                                 ~message_id:(if String.contains to_alias '@' then Some message_id else None)
                                  ~pp_extras
                                  ~ts
                                  ~from_alias

@@ -3131,7 +3131,7 @@ open C2c_mcp_helpers
   (* Caller holds the registry lock. Shared by ordinary sends and the host
      fence so identity validation cannot race enqueue. No nested registry lock
      or worktree-mismatch helper (which takes that lock itself) belongs here. *)
-  let enqueue_message_with_result_locked ?(allow_pending_verdict = true) t ~from_alias ~to_alias ~content
+  let enqueue_message_with_result_locked ?(allow_pending_verdict = true) ?message_id t ~from_alias ~to_alias ~content
       ?(deferrable = false) ?(ephemeral = false) () =
     if debug_enabled then
       Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
@@ -3146,7 +3146,7 @@ open C2c_mcp_helpers
          the relay outbox path persists by design. Cross-host ephemeral is a
          follow-up. For now, [ephemeral] only takes effect on local delivery. *)
       C2c_relay_connector.append_outbox_entry t.root ~from_alias ~to_alias
-        ~content ();
+        ~content ?message_id ();
       Relay_outbox
     end else
       (match resolve_live_session_id_by_alias ~registry_locked:true t to_alias with
@@ -3161,7 +3161,7 @@ open C2c_mcp_helpers
                    ^ "' is not registered; message not queued")
               else begin
                 C2c_relay_connector.append_outbox_entry t.root ~from_alias
-                  ~to_alias ~content ();
+                  ~to_alias ~content ?message_id ();
                 Relay_outbox
               end
           | All_recipients_dead ->
@@ -3184,11 +3184,11 @@ open C2c_mcp_helpers
               write_local_dm_to_session ~allow_pending_verdict t ~from_alias ~to_alias ~content
                 ~deferrable ~ephemeral ~session_id ~offline:false)
 
-  let enqueue_message_with_result t ~from_alias ~to_alias ~content
+  let enqueue_message_with_result ?message_id t ~from_alias ~to_alias ~content
       ?(deferrable = false) ?(ephemeral = false) () =
     check_worktree_mismatch t ~from_alias;
     with_registry_lock t (fun () ->
-      enqueue_message_with_result_locked t ~from_alias ~to_alias ~content
+      enqueue_message_with_result_locked ?message_id t ~from_alias ~to_alias ~content
         ~deferrable ~ephemeral ())
 
   let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false)

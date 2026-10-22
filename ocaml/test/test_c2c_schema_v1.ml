@@ -732,7 +732,7 @@ let test_aggregate_gate_mcp_send_receipt () =
   let receipt ?(pp_extras = base_extras) ?(recipient_dnd = false)
       ?recipient_compacting ?(deferrable = false) () =
     Yojson.Safe.from_string
-      (C2c_send_handlers.build_send_receipt ~pp_extras ~ts:1700000002.5
+      (C2c_send_handlers.build_send_receipt ~message_id:None ~pp_extras ~ts:1700000002.5
          ~from_alias:"zz-gate-send" ~to_alias:"zz-gate-recv"
          ~content:"aggregate gate probe" ~recipient_dnd ~recipient_compacting
          ~deferrable ~offline:false)

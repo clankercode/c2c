@@ -771,7 +771,7 @@ let test_outbox_roundtrip () =
     Alcotest.(check string) "first from" "alice" e1.ob_from;
     Alcotest.(check string) "first to" "bob@host" e1.ob_to;
     Alcotest.(check string) "first content" "hi" e1.ob_content;
-    Alcotest.(check (option string)) "first msg_id none" None e1.ob_msg_id;
+    Alcotest.(check bool) "generated stable message ID" true (Option.is_some e1.ob_msg_id);
     Alcotest.(check string) "second to" "carol@host" e2.ob_to;
     Alcotest.(check (option string)) "second msg_id" (Some "msg-123") e2.ob_msg_id;
     (* write_outbox [] removes file *)

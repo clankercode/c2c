@@ -652,7 +652,187 @@ let error_code_of = function
      | _ -> "")
   | _ -> ""
 
+let with_forwarded_proto_trust value f =
+  let saved = Sys.getenv_opt "C2C_RELAY_TRUST_FORWARDED_PROTO" in
+  Unix.putenv "C2C_RELAY_TRUST_FORWARDED_PROTO" value;
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.putenv "C2C_RELAY_TRUST_FORWARDED_PROTO"
+        (Option.value ~default:"" saved))
+    f
+
+(* B370: real signed HTTP ingress and actual WS frames for both backends.
+   The subscriber uses the same production session/pipe seam as B340. *)
+let with_contact_subscriber ~alias f =
+  let open Lwt.Infix in
+  let raw_ic, raw_oc = Lwt_io.pipe () in
+  let sink_ic, sink_oc = Lwt_io.pipe () in
+  let cohttp_ic = Cohttp_lwt_unix.Private.Input_channel.create raw_ic in
+  let session = Relay_ws_frame.Session.of_cohttp_channels cohttp_ic sink_oc in
+  let sub : Relay_ws_server.subscriber =
+    { aliases = Relay_ws_server.StringSet.singleton alias;
+      session; last_pong = Unix.gettimeofday (); closed = false }
+  in
+  Relay_ws_server.SubscriberMap.add Relay_ws_server.subscribers ~alias sub;
+  Lwt.finalize (fun () -> f sink_ic)
+    (fun () ->
+      Relay_ws_server.SubscriberMap.remove Relay_ws_server.subscribers ~alias sub;
+      sub.closed <- true;
+      Lwt.join
+        [ Lwt_io.close raw_ic; Lwt_io.close raw_oc;
+          Lwt_io.close sink_ic; Lwt_io.close sink_oc ])
+
+module Bound_http (B : BACKEND) = struct
+  module Server = RTSR.Make (B)
+
+  let test_bound_delivery_and_projections () =
+    Relay_ws_server.reset_push_dm_count ();
+    let dir = tmp_dir "c2c-b370-bound-http" in
+    Fun.protect ~finally:(fun () -> rm_rf dir) @@ fun () ->
+    Server.with_server ~token:"b370-bound" ~native_tls:true ~persist_dir:dir
+      (fun ~base_url ~relay ->
+        let open Lwt.Infix in
+        let recipient = Relay_identity.generate ~alias_hint:"zzbound-r" () in
+        let sender = Relay_identity.generate ~alias_hint:"zzbound-s" () in
+        let rp = recipient.Relay_identity.public_key in
+        let sp = sender.Relay_identity.public_key in
+        let register ~alias ~pk ~host =
+          let node_id = "n-" ^ alias and session_id = "s-" ^ alias in
+          let status, _ = B.register relay ~node_id ~session_id ~alias
+              ~identity_pk:pk ~opaque_host_id:(Some host) () in
+          check string "bound HTTP registration" "ok" status;
+          node_id, session_id
+        in
+        let rn, rs = register ~alias:"zzbound-r" ~pk:rp ~host:"012345abcdef" in
+        ignore (register ~alias:"zzbound-s" ~pk:sp ~host:"fedcba654321");
+        let issued =
+          match B.issue_contact_grant relay ~recipient_identity_pk:rp
+              ~delivery_alias:"zzbound-r" ~sender_identity_pk:sp
+              ~expires_at:(Unix.gettimeofday () +. 3600.) () with
+          | Ok issued -> issued
+          | Error e -> failwith e
+        in
+        let binding_id = "b370-" ^ B.name in
+        Relay.add_observer_binding ~binding_id ~phone_ed25519_pubkey:rp
+          ~phone_x25519_pubkey:(String.make 32 'x')
+          ~machine_ed25519_pubkey:sp ~provenance_sig:"fixture";
+        let queue () = Relay_short_queue.ShortQueue.get_after Relay.short_queue
+            ~binding_id ~since_ts:0. in
+        let stats () = B.stats relay ~now:(Unix.gettimeofday ()) in
+        let before_stats = stats () in
+        let body fields =
+          `Assoc
+            ([ ("protocol", `String "c2c-contact/1");
+               ("grant_secret", `String (secret_b64 issued.grant_secret));
+               ("message_id", `String "m-bound-http");
+               ("content", `String "bound HTTP payload");
+               (* Untrusted route metadata must never reach a reply footer. *)
+               ("from_alias", `String "zzbound-s@111111111111");
+               ("opaque_host_id", `String "111111111111") ] @ fields)
+        in
+        let pk = ("expected_recipient_pk", `String (b64url rp)) in
+        let alias = ("expected_delivery_alias", `String "zzbound-r") in
+        let host = ("expected_recipient_host_id", `String "012345abcdef") in
+        let invalid =
+          [ [ pk ]; [ alias ]; [ host ];
+            [ ("expected_recipient_pk", `Null) ];
+            [ ("expected_recipient_pk", `Null); alias ];
+            [ pk; ("expected_delivery_alias", `Null) ];
+            [ pk; ("expected_delivery_alias", `Int 1) ];
+            [ ("expected_recipient_pk", `String "bad"); alias ];
+            [ ("expected_recipient_pk", `String (b64url (String.make 31 'k'))); alias ];
+            [ ("expected_recipient_pk", `String (b64url rp ^ "=")); alias ];
+            [ ("expected_recipient_pk", `String (b64url sp)); alias ];
+            [ pk; ("expected_delivery_alias", `String "") ];
+            [ pk; ("expected_delivery_alias", `String "zzbound-other") ];
+            [ pk; ("expected_delivery_alias", `String "zzbound-r@012345abcdef") ];
+            [ pk; alias; ("expected_recipient_host_id", `Null) ];
+            [ pk; alias; ("expected_recipient_host_id", `String "relay-name") ];
+            [ pk; alias; ("expected_recipient_host_id", `String "111111111111") ] ]
+        in
+        let signed fields = signed_contact_call ~base_url ~identity:sender
+            ~alias:"zzbound-s" ~body:(body fields) () in
+        let denial_body = ref None in
+        let deny fields =
+          signed fields >|= fun response ->
+          check int "bound destination denial HTTP 401" 401
+            (RTSR.status_code response);
+          check string "bound destination uniform code" "contact_unauthorised"
+            (error_code_of response.json);
+          match !denial_body with
+          | None -> denial_body := Some response.body_text
+          | Some canonical -> check string "byte-identical destination denial"
+              canonical response.body_text
+        in
+        Lwt.finalize
+          (fun () -> with_contact_subscriber ~alias:"zzbound-r" (fun sink_ic ->
+            Lwt_list.iter_s deny invalid >>= fun () ->
+            check int "destination denials leave inbox empty" 0
+              (List.length (B.peek_inbox relay ~node_id:rn ~session_id:rs));
+            check int "destination denials leave queue empty" 0 (List.length (queue ()));
+            check int "destination denials have no WS push" 0
+              (Relay_ws_server.push_dm_invocations ());
+            check bool "destination denials leave stats unchanged" true
+              (before_stats = stats ());
+            check int "destination denials leave DLQ empty" 0
+              (List.length (B.dead_letter relay));
+            signed [ pk; alias; host ] >>= fun accepted ->
+            check int "bound contact HTTP 200" 200 (RTSR.status_code accepted);
+            (match B.peek_inbox relay ~node_id:rn ~session_id:rs with
+             | [ `Assoc fields ] ->
+               check bool "inbox retains registered sender host" true
+                 (List.assoc_opt "from_alias" fields
+                  = Some (`String "zzbound-s@fedcba654321"))
+             | _ -> fail "expected one bound HTTP inbox row");
+            (match queue () with
+             | [ msg ] -> check string "shortqueue retains registered sender host"
+                 "zzbound-s@fedcba654321" msg.Relay_short_queue.from_alias
+             | _ -> fail "expected one bound HTTP queue row");
+            Lwt.pick
+              [ (Relay_ws_frame.read_frame sink_ic >|= fun frame -> Some frame);
+                (Lwt_unix.sleep 2. >|= fun () -> None) ] >>= fun frame ->
+            (match frame with
+             | Some frame ->
+               check int "WS projects DM as text" Relay_ws_frame.opcode_text
+                 frame.Relay_ws_frame.opcode;
+               let json = Yojson.Safe.from_string frame.Relay_ws_frame.payload in
+               check bool "WS retains registered sender host" true
+                 (Yojson.Safe.Util.member "from" json
+                  = `String "zzbound-s@fedcba654321")
+             | None -> fail "expected bound contact WS frame");
+            let accepted_stats = stats () in
+            Lwt_list.iter_s deny invalid >>= fun () ->
+            signed [ pk; alias; host ] >>= fun duplicate ->
+            check int "bound contact retry HTTP 200" 200 (RTSR.status_code duplicate);
+            check bool "bound contact retry duplicate" true
+              (match duplicate.json with
+               | Some (`Assoc fields) -> List.assoc_opt "duplicate" fields = Some (`Bool true)
+               | _ -> false);
+            check int "bound retry leaves exactly one inbox row" 1
+              (List.length (B.peek_inbox relay ~node_id:rn ~session_id:rs));
+            check int "bound retry leaves exactly one queue row" 1 (List.length (queue ()));
+            check int "bound retry leaves exactly one WS push" 1
+              (Relay_ws_server.push_dm_invocations ());
+            check bool "denied and duplicate retries leave stats unchanged" true
+              (accepted_stats = stats ());
+            check int "denied retries leave DLQ empty" 0
+              (List.length (B.dead_letter relay));
+            Lwt.return_unit))
+          (fun () ->
+            Relay.ObserverBindings.remove Relay.observer_bindings ~binding_id;
+            Relay_short_queue.ShortQueue.clear Relay.short_queue ~binding_id;
+            Lwt.return_unit))
+
+  let cases =
+    [ test_case "signed destination binding + inbox/WS/shortqueue routes" `Quick
+        test_bound_delivery_and_projections ]
+end
+
+module Mem_bound_http = Bound_http (In_mem)
+module Sql_bound_http = Bound_http (Sqlite)
+
 let test_signed_contact_cleartext_and_untrusted_proxy_refused () =
+  with_forwarded_proto_trust "0" @@ fun () ->
   Relay_ws_server.reset_push_dm_count ();
   RTSR.with_server ~token:"b265-cleartext" (fun ~base_url ~relay ->
     let open Lwt.Infix in
@@ -676,14 +856,21 @@ let test_signed_contact_cleartext_and_untrusted_proxy_refused () =
     signed_contact_call ~base_url ~identity:sender ~alias:"zzc-s" ~body
       ~headers:[ ("X-Forwarded-Proto", "https") ] ()
     >>= fun spoofed ->
+    signed_contact_call ~base_url ~identity:sender ~alias:"zzc-s" ~body
+      ~headers:[ ("X-C2C-Allow-Contact-HTTP", "true");
+                 ("Forwarded", "proto=https") ] ()
+    >>= fun header_opt_in ->
     List.iter
       (fun (name, r) ->
         check int (name ^ " HTTP 401") 401 (RTSR.status_code r);
         check string (name ^ " uniform code") "contact_unauthorised"
           (error_code_of r.json))
-      [ ("cleartext", clear); ("untrusted forwarded proto", spoofed) ];
+      [ ("cleartext", clear); ("untrusted forwarded proto", spoofed);
+        ("request header cannot opt in", header_opt_in) ];
     check string "identical transport denial bodies" clear.body_text
       spoofed.body_text;
+    check string "header opt-in has identical denial" clear.body_text
+      header_opt_in.body_text;
     check int "no inbox on transport refusal" 0
       (List.length
          (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
@@ -936,6 +1123,200 @@ let test_signed_contact_wrong_sender_denied () =
       (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
     Lwt.return_unit)
 
+(* B369 exercises the production router over actual plaintext loopback HTTP.
+   The explicit policy changes only transport admission, never the proofs. *)
+let test_contact_http_config_resolution () =
+  check bool "absent configuration defaults to deny" false
+    (Relay.resolve_allow_contact_http ~configured:None ~env:None);
+  List.iter
+    (fun value ->
+      check bool ("explicit env opt-in " ^ value) true
+        (Relay.resolve_allow_contact_http ~configured:None ~env:(Some value)))
+    [ "1"; "true"; "TRUE"; "yes"; "on"; " True " ];
+  List.iter
+    (fun value ->
+      check bool ("env fails closed " ^ value) false
+        (Relay.resolve_allow_contact_http ~configured:None ~env:(Some value)))
+    [ ""; "0"; "false"; "no"; "off"; "tru"; "2"; "https" ];
+  check bool "explicit false overrides env opt-in" false
+    (Relay.resolve_allow_contact_http ~configured:(Some false) ~env:(Some "1"));
+  check bool "explicit true overrides env denial" true
+    (Relay.resolve_allow_contact_http ~configured:(Some true) ~env:(Some "0"))
+
+let test_contact_http_health_policy () =
+  (* SQLite would otherwise claim production readiness, unlike InMemory.
+     Construct independent routers, including a default after an opted-in
+     one: the exception must never leak between server instances. *)
+  let module Server = Relay.Relay_server (Relay.SqliteRelay) in
+  let dir = tmp_dir "c2c-b369-health" in
+  Fun.protect ~finally:(fun () -> rm_rf dir) @@ fun () ->
+  let relay = Relay.SqliteRelay.create ~persist_dir:dir () in
+  let with_router ~allow_contact_http f =
+    let open Lwt.Infix in
+    Lwt_main.run
+      (RTSR.loopback_socket () >>= fun (fd, port) ->
+       let rate_limiter = Relay.Rate_limiter_inst.create ~gc_interval:300.0 () in
+       let stop, wake_stop = Lwt.wait () in
+       let callback (conn, _) req body =
+         Server.make_callback ~allow_contact_http relay (Some "b369-health")
+           conn req body ?broker_root:None ~native_tls:false ~rate_limiter
+       in
+       let spec = Cohttp_lwt_unix.Server.make ~callback () in
+       let server =
+         Cohttp_lwt_unix.Server.create ~stop ~mode:(`TCP (`Socket fd)) spec
+       in
+       Lwt.pause () >>= fun () ->
+       let base_url = Printf.sprintf "http://127.0.0.1:%d" port in
+       Lwt.finalize (fun () -> f ~base_url)
+         (fun () -> Lwt.wakeup_later wake_stop (); server))
+  in
+  List.iter
+    (fun allow_contact_http ->
+      with_router ~allow_contact_http (fun ~base_url ->
+          let open Lwt.Infix in
+          RTSR.call ~base_url ~meth:`GET ~path:"/health" () >|= fun r ->
+          check int "health HTTP 200" 200 (RTSR.status_code r);
+          match r.json with
+          | Some (`Assoc fields) ->
+            check bool "health reflects explicit policy" true
+              (List.assoc_opt "allow_contact_http" fields
+               = Some (`Bool allow_contact_http));
+            check bool "health names transport policy" true
+              (List.assoc_opt "contact_transport_policy" fields
+               = Some (`String (if allow_contact_http then "plaintext_http_opt_in"
+                                else "confidential_required")));
+            check bool "opt-in keeps prod authentication" true
+              (List.assoc_opt "auth_mode" fields = Some (`String "prod"));
+            check bool "opt-in does not enter dev mode" true
+              (List.assoc_opt "dev_mode" fields = Some (`Bool false));
+            check bool "production claims follow confidential-only policy" true
+              (List.assoc_opt "production_claims" fields
+               = Some (`Bool (not allow_contact_http)))
+          | _ -> fail "health response not JSON"))
+    [ false; true; false ]
+
+let test_contact_http_opt_in_preserves_admission () =
+  Relay_ws_server.reset_push_dm_count ();
+  RTSR.with_server ~token:"b369-opt-in" ~allow_contact_http:true
+    (fun ~base_url ~relay ->
+      let open Lwt.Infix in
+      let recipient = Relay_identity.generate ~alias_hint:"zzlan-r" () in
+      let sender = Relay_identity.generate ~alias_hint:"zzlan-s" () in
+      let attacker = Relay_identity.generate ~alias_hint:"zzlan-a" () in
+      let rn, rs = register_with_identity relay ~alias:"zzlan-r" recipient in
+      let _ = register_with_identity relay ~alias:"zzlan-s" sender in
+      let _ = register_with_identity relay ~alias:"zzlan-a" attacker in
+      let issue () =
+        issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+          ~delivery_alias:"zzlan-r" ~sender_pk:sender.Relay_identity.public_key
+      in
+      let valid = issue () in
+      let revoked = issue () in
+      (match Relay.InMemoryRelay.revoke_contact_grant relay
+          ~recipient_identity_pk:recipient.Relay_identity.public_key
+          ~grant_id:revoked.grant_id () with
+       | Ok () -> ()
+       | Error e -> failwith e);
+      let now = Unix.gettimeofday () in
+      let expired =
+        match Relay.InMemoryRelay.issue_contact_grant relay
+            ~recipient_identity_pk:recipient.Relay_identity.public_key
+            ~delivery_alias:"zzlan-r"
+            ~sender_identity_pk:sender.Relay_identity.public_key
+            ~now:(now -. 120.) ~expires_at:(now -. 60.) () with
+        | Ok grant -> grant
+        | Error e -> failwith e
+      in
+      let body ?(secret=valid.grant_secret) ?(mid="m-lan")
+          ?(content="lan-payload") () =
+        `Assoc [ ("protocol", `String "c2c-contact/1");
+                 ("grant_secret", `String (secret_b64 secret));
+                 ("message_id", `String mid); ("content", `String content) ]
+      in
+      let signed body =
+        signed_contact_call ~base_url ~identity:sender ~alias:"zzlan-s" ~body ()
+      in
+      signed (body ~secret:revoked.grant_secret ()) >>= fun revoked_denial ->
+      signed (body ~secret:expired.grant_secret ()) >>= fun expired_denial ->
+      signed_contact_call ~base_url ~identity:attacker ~alias:"zzlan-a"
+        ~body:(body ()) () >>= fun wrong_sender ->
+      RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver"
+        ~body:(body ()) () >>= fun unsigned ->
+      RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver"
+        ~headers:[ ("Authorization", "Bearer b369-opt-in") ]
+        ~body:(body ()) () >>= fun bearer ->
+      let authorization =
+        Relay_signed_ops.sign_request sender ~alias:"zzlan-s" ~meth:"POST"
+          ~path:"/contact/v1/deliver"
+          ~body_str:(Yojson.Safe.to_string (body ())) ()
+      in
+      RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver"
+        ~headers:[ ("Authorization", authorization);
+                   ("X-Forwarded-Proto", "https");
+                   ("X-C2C-Allow-Contact-HTTP", "true") ]
+        ~body:(body ~content:"tampered-after-signing" ()) ()
+      >>= fun bad_signature ->
+      List.iter
+        (fun (name, r) ->
+          check int (name ^ " HTTP 401") 401 (RTSR.status_code r);
+          check string (name ^ " uniform code") "contact_unauthorised"
+            (error_code_of r.json);
+          check string (name ^ " byte-identical denial")
+            revoked_denial.body_text r.body_text)
+        [ ("revoked", revoked_denial); ("expired", expired_denial);
+          ("wrong sender", wrong_sender); ("unsigned", unsigned);
+          ("Bearer is not sender proof", bearer); ("bad signature", bad_signature) ];
+      check int "denials leave inbox empty" 0
+        (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+      check int "denials emit no WS push" 0
+        (Relay_ws_server.push_dm_invocations ());
+      signed (body ()) >>= fun accepted ->
+      check int "signed plaintext opt-in succeeds" 200 (RTSR.status_code accepted);
+      signed (body ~content:"retry-does-not-redeliver" ()) >>= fun duplicate ->
+      check int "plaintext retry HTTP 200" 200 (RTSR.status_code duplicate);
+      check bool "retry is a duplicate" true
+        (match duplicate.json with
+         | Some (`Assoc fields) -> List.assoc_opt "duplicate" fields = Some (`Bool true)
+         | _ -> false);
+      check int "exactly one inbox message" 1
+        (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+      check int "exactly one WS push" 1 (Relay_ws_server.push_dm_invocations ());
+      (* Revocation also invalidates retries of an accepted message. *)
+      (match Relay.InMemoryRelay.revoke_contact_grant relay
+          ~recipient_identity_pk:recipient.Relay_identity.public_key
+          ~grant_id:valid.grant_id () with
+       | Ok () -> ()
+       | Error e -> failwith e);
+      signed (body ()) >|= fun retry_revoked ->
+      check int "revoked retry HTTP 401" 401 (RTSR.status_code retry_revoked);
+      check string "revoked retry uniform denial" revoked_denial.body_text
+        retry_revoked.body_text;
+      check int "revoked retry emits no further WS push" 1
+        (Relay_ws_server.push_dm_invocations ()))
+
+let test_contact_http_opt_in_still_refuses_tokenless () =
+  RTSR.with_server ~allow_contact_http:true (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let recipient = Relay_identity.generate ~alias_hint:"zzlan-dev-r" () in
+    let sender = Relay_identity.generate ~alias_hint:"zzlan-dev-s" () in
+    let rn, rs = register_with_identity relay ~alias:"zzlan-dev-r" recipient in
+    let _ = register_with_identity relay ~alias:"zzlan-dev-s" sender in
+    let issued =
+      issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+        ~delivery_alias:"zzlan-dev-r" ~sender_pk:sender.Relay_identity.public_key
+    in
+    let body =
+      `Assoc [ ("protocol", `String "c2c-contact/1");
+               ("grant_secret", `String (secret_b64 issued.grant_secret));
+               ("message_id", `String "m-lan-dev"); ("content", `String "deny") ]
+    in
+    signed_contact_call ~base_url ~identity:sender ~alias:"zzlan-dev-s" ~body ()
+    >|= fun r ->
+    check int "opt-in does not enable tokenless delivery" 401 (RTSR.status_code r);
+    check string "tokenless uniform code" "contact_unauthorised" (error_code_of r.json);
+    check int "tokenless inbox empty" 0
+      (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs)))
+
 
 let test_http_prod_registration_proofs () =
   RTSR.with_server ~token:"b265-reg-token" (fun ~base_url ~relay ->
@@ -1156,6 +1537,8 @@ let () =
   Alcotest.run "relay_contact_delivery_handlers"
     [ ("InMemoryRelay", Mem.cases);
       ("SqliteRelay", Sql.cases);
+      ("InMemoryRelay bound HTTP", Mem_bound_http.cases);
+      ("SqliteRelay bound HTTP", Sql_bound_http.cases);
       ( "HTTP",
         [ test_case "contact/v1/deliver refuses tokenless" `Quick
             test_http_contact_deliver_refuses_tokenless;
@@ -1165,6 +1548,14 @@ let () =
             test_http_send_all_skips_private;
           test_case "signed cleartext + spoofed proxy refused" `Quick
             test_signed_contact_cleartext_and_untrusted_proxy_refused;
+          test_case "HTTP opt-in config defaults and precedence" `Quick
+            test_contact_http_config_resolution;
+          test_case "health advertises HTTP exception truthfully" `Quick
+            test_contact_http_health_policy;
+          test_case "HTTP opt-in preserves auth, consent and retries" `Quick
+            test_contact_http_opt_in_preserves_admission;
+          test_case "HTTP opt-in still refuses tokenless delivery" `Quick
+            test_contact_http_opt_in_still_refuses_tokenless;
           test_case "signed private send matches contact denial" `Quick
             test_signed_private_send_matches_contact_denial;
           test_case "signed contact accept once + duplicate" `Quick

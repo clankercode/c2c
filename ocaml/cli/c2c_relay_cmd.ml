@@ -30,6 +30,13 @@ let relay_serve_cmd =
   let token_file =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token-file" ] ~docv:"PATH" ~doc:"Read bearer token from a file.")
   in
+  let allow_contact_http =
+    Cmdliner.Arg.(value & vflag None
+      [Some true, info ["allow-contact-http"]
+         ~doc:"Explicitly allow plaintext HTTP contact delivery on a trusted LAN (no confidentiality). Overrides C2C_RELAY_ALLOW_CONTACT_HTTP.";
+       Some false, info ["require-contact-https"]
+         ~doc:"Require confidential contact transport even when C2C_RELAY_ALLOW_CONTACT_HTTP is set."])
+  in
   let storage =
     Cmdliner.Arg.(value & opt (some string) None & info [ "storage" ] ~docv:"memory|sqlite" ~doc:"Storage backend (default: memory).")
   in
@@ -97,6 +104,7 @@ let relay_serve_cmd =
   let+ listen = listen
   and+ token = token
   and+ token_file = token_file
+  and+ allow_contact_http = allow_contact_http
   and+ storage = storage
   and+ db_path = db_path
   and+ gc_interval = gc_interval
@@ -285,7 +293,7 @@ match storage with
     in
     let _ = remote_polling_stop in
     let module Server = Relay.Relay_server(Relay.SqliteRelay) in
-    Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
+    Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ?allow_contact_http ())
 | _ ->
     Printf.printf "storage: memory\n%!";
     (match persist_dir with
@@ -303,7 +311,7 @@ match storage with
     in
     let _ = remote_polling_stop in
     let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
-    Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
+    Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ?allow_contact_http ())
 
 (* B301: all relay-config resolution now lives in [Relay_activation] (library
    leaf) so the CLI, the health probe and the subscribe daemon cannot drift
@@ -1554,12 +1562,14 @@ let relay_dm_cmd =
   let session_id =
     Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"SESSION_ID" ~doc:"Relay session_id to poll/peek under (requires --node-id). Honors C2C_RELAY_SESSION_ID.")
   in
+  let message_id = Cmdliner.Arg.(value & opt (some string) None & info ["message-id"]
+      ~docv:"ID" ~doc:"Stable send id; reuse with identical content after an uncertain response.") in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>; for send-all: <message...>")
   in
   let+ subcmd = subcmd and+ relay_url = relay_url and+ token = token
   and+ alias = alias and+ node_id = node_id and+ session_id = session_id
-  and+ words = words in
+  and+ words = words and+ message_id = message_id in
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "%s%!" (relay_url_required_error ());
@@ -1583,20 +1593,12 @@ let relay_dm_cmd =
                 (* B045: Substitution check removed from relay/programmatic paths.
                    Body is data, never eval'd by a shell. The local CLI retains
                    a stderr-only informational hint for human operators. *)
-                let body_str = Yojson.Safe.to_string (`Assoc [
-                  ("from_alias", `String from_alias);
-                  ("to_alias", `String to_alias);
-                  ("content", `String content);
-                ]) in
-                let result = (match Relay_identity.load () with
-                  | Ok id ->
-                      let auth = Relay_signed_ops.sign_request id ~alias:from_alias
-                        ~meth:"POST" ~path:"/send" ~body_str () in
-                      Lwt_main.run (Relay.Relay_client.send_signed client
-                        ~from_alias ~to_alias ~content ~auth_header:auth ())
-                  | Error _ ->
-                      Lwt_main.run (Relay.Relay_client.send client
-                        ~from_alias ~to_alias ~content ())) in
+                let identity = match load_client_identity () with
+                  | Ok id -> Some id | Error _ -> None in
+                let message_id = Option.value message_id ~default:(Relay_contact_send.new_message_id ()) in
+                let result = Lwt_main.run
+                  (Relay.Relay_client.send_with_identity client ?identity
+                    ~from_alias ~to_alias ~content ~message_id ()) in
                 (* J2: a relay ACK means the relay accepted the message —
                    emit the canonical schema-v1 shape (delivery.state
                    "accepted", source "relay") with the legacy ack keys
@@ -1642,7 +1644,7 @@ let relay_dm_cmd =
              ("node_id", `String node_id);
              ("session_id", `String session_id);
            ]) in
-           let result = (match Relay_identity.load () with
+           let result = (match load_client_identity () with
              | Ok id ->
                  let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                    ~meth:"POST" ~path:"/poll_inbox" ~body_str () in
@@ -1700,7 +1702,7 @@ let relay_dm_cmd =
              ("node_id", `String node_id);
              ("session_id", `String session_id);
            ]) in
-           let result = (match Relay_identity.load () with
+           let result = (match load_client_identity () with
              | Ok id ->
                  let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                    ~meth:"POST" ~path:"/peek_inbox" ~body_str () in
@@ -1746,7 +1748,7 @@ let relay_dm_cmd =
                   ("content", `String content);
                 ] in
                 let body_str = Yojson.Safe.to_string body in
-                let result = (match Relay_identity.load () with
+                let result = (match load_client_identity () with
                   | Ok id ->
                       let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                         ~meth:"POST" ~path:"/send_all" ~body_str () in
@@ -1813,7 +1815,7 @@ let relay_mobile_pair_cmd =
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
       match subcmd with
       | "prepare" ->
-          (match Relay_identity.load () with
+          (match load_client_identity () with
            | Error _ ->
                Printf.eprintf "error: no identity.json found. Run 'c2c relay identity init' first.\n%!";
                exit 1
@@ -1887,7 +1889,7 @@ let relay_mobile_pair_cmd =
           (* B116: revocation requires a proof signed by the machine
              identity that created the binding (the phone key can also
              revoke, from the phone side). *)
-          (match Relay_identity.load () with
+          (match load_client_identity () with
            | Error _ ->
                Printf.eprintf
                  "error: no identity.json found. Binding revocation requires the machine identity that created the binding — run 'c2c relay identity init' first.\n%!";
@@ -1903,7 +1905,7 @@ let relay_mobile_pair_cmd =
                in
                print_result_and_exit result)
       | "init" ->
-          (match Relay_identity.load () with
+          (match load_client_identity () with
            | Error _ ->
                Printf.eprintf "error: no identity.json found. Run 'c2c relay identity init' first.\n%!";
                exit 1
@@ -1986,7 +1988,7 @@ let relay_subscribe_cmd =
         exit 1
       end;
       (* Load identity for signing *)
-      match Relay_identity.load () with
+      match load_client_identity () with
       | Error msg ->
           Printf.eprintf "error: cannot load identity.json: %s\n%!" msg;
           Printf.eprintf "Run 'c2c relay identity init' first.\n%!";
@@ -2388,6 +2390,10 @@ let relay_contact_issue_cmd =
       & info [ "persist-dir" ] ~docv:"DIR"
           ~doc:"Relay SQLite persist dir (contains c2c_relay.db).")
   in
+  let relay_url = Cmdliner.Arg.(value & opt (some string) None & info ["relay-url"]
+      ~docv:"URL" ~doc:"Relay URL bound into the transferable grant artifact.") in
+  let recipient_route = Cmdliner.Arg.(value & opt (some string) None & info ["recipient-route"]
+      ~docv:"ALIAS@HOST" ~doc:"Exact recipient route for sender-side import; defaults to delivery alias.") in
   let delivery_alias =
     Cmdliner.Arg.(
       required
@@ -2409,6 +2415,8 @@ let relay_contact_issue_cmd =
       & info [ "sender-pk" ] ~docv:"B64URL"
           ~doc:"Bound sender Ed25519 public key (base64url, 32 bytes).")
   in
+  let rotate_grant_id = Cmdliner.Arg.(value & opt (some string) None & info ["rotate-grant-id"]
+      ~docv:"ID" ~doc:"Rotate this recipient-owned grant; revokes the old grant and advances generation.") in
   let expires_in =
     Cmdliner.Arg.(
       value & opt float 86400.
@@ -2428,16 +2436,29 @@ let relay_contact_issue_cmd =
   and+ sender_pk = sender_pk
   and+ expires_in = expires_in
   and+ label = label
-  and+ json = json in
+  and+ json = json and+ relay_url = relay_url and+ recipient_route = recipient_route
+  and+ rotate_grant_id = rotate_grant_id in
+  let relay_url = Option.map (fun u -> match Relay_contact_store.canonical_url u with
+    | Ok u -> u | Error e -> Printf.eprintf "error: %s\n%!" e; exit 1) relay_url in
+  let recipient_route = Option.value recipient_route ~default:delivery_alias in
+  if not (C2c_name.is_valid_with_opaque_host_id recipient_route)
+     || fst (C2c_name.split_opaque_host_id recipient_route) <> delivery_alias then
+    (Printf.eprintf "error: recipient route must name the delivery alias\n%!"; exit 1);
   let rpk = decode_b64url_pk "recipient-pk" recipient_pk in
   let spk = decode_b64url_pk "sender-pk" sender_pk in
   let t = contact_local_backend ~persist_dir in
   let now = Unix.gettimeofday () in
-  match
-    Relay.SqliteRelay.issue_contact_grant t ~recipient_identity_pk:rpk
-      ~delivery_alias ~sender_identity_pk:spk ~expires_at:(now +. expires_in)
-      ?label ~now ()
-  with
+  let result = match rotate_grant_id with
+    | None -> Relay.SqliteRelay.issue_contact_grant t ~recipient_identity_pk:rpk
+        ~delivery_alias ~sender_identity_pk:spk ~expires_at:(now +. expires_in) ?label ~now ()
+    | Some grant_id ->
+      let metas = Relay.SqliteRelay.list_contact_grants t ~recipient_identity_pk:rpk in
+      if not (List.exists (fun (m : Relay.contact_grant_meta) -> m.grant_id = grant_id
+                              && m.delivery_alias = delivery_alias) metas) then
+        Error "contact grant not found for delivery alias"
+      else Relay.SqliteRelay.rotate_contact_grant t ~recipient_identity_pk:rpk
+        ~grant_id ~sender_identity_pk:spk ~expires_at:(now +. expires_in) ?label ~now () in
+  match result with
   | Error e ->
       if json then
         print_endline (Printf.sprintf {|{"ok":false,"error":%S}|} e)
@@ -2454,6 +2475,14 @@ let relay_contact_issue_cmd =
                   ("grant_secret", `String (b64url_nopad r.grant_secret));
                   ("expires_at", `Float r.expires_at);
                   ("generation", `Int r.generation);
+                  ("artifact_version", `Int 1);
+                  ("protocol", `String "c2c-contact/1");
+                  ("scope", `String "dm-first-contact");
+                  ("relay_url", (match relay_url with Some u -> `String u | None -> `Null));
+                  ("recipient_route", `String recipient_route);
+                  ("delivery_alias", `String delivery_alias);
+                  ("recipient_pk", `String recipient_pk);
+                  ("sender_pk", `String sender_pk);
                 ]))
       else begin
         Printf.printf "grant_id:     %s\n" r.grant_id;
@@ -2566,59 +2595,85 @@ let relay_contact_revoke =
     (Cmdliner.Cmd.info "revoke" ~doc:"Revoke a contact grant by id.")
     relay_contact_revoke_cmd
 
+let contact_allow_http_term =
+  Cmdliner.Arg.(value & vflag None
+    [Some true, info ["allow-http"] ~doc:"Explicitly allow this grant over plaintext HTTP on a trusted LAN.";
+     Some false, info ["require-https"] ~doc:"Refuse plaintext even if C2C_CONTACT_ALLOW_HTTP is enabled."])
+
+let contact_client_http configured =
+  Relay.resolve_allow_contact_http ~configured
+    ~env:(Sys.getenv_opt "C2C_CONTACT_ALLOW_HTTP")
+
+let contact_command_error message = Printf.eprintf "error: %s\n%!" message; exit 1
+
+let relay_contact_manage_cmd action =
+  let open Cmdliner in
+  let relay_url = Arg.(value & opt (some string) None & info ["relay-url"] ~docv:"URL" ~doc:relay_url_resolution_doc) in
+  let to_alias = Arg.(required & opt (some string) None & info ["to"] ~docv:"ALIAS@HOST" ~doc:"Exact intended recipient route.") in
+  let file = Arg.(value & opt (some string) None & info ["grant-file"] ~docv:"PATH" ~doc:"Private transfer input for import or new output for export.") in
+  let+ relay_url = relay_url and+ to_alias = to_alias and+ file = file
+  and+ allow_http = contact_allow_http_term in
+  let url = match resolve_relay_url relay_url with Some u -> u | None -> contact_command_error "relay URL required" in
+  let result = match action with
+    | "disable" -> Relay_contact_store.disable ~relay_url:url ~to_alias ()
+    | "export" ->
+      let path = match file with Some p -> p | None -> contact_command_error "--grant-file output required" in
+      Relay_contact_store.export_file ~relay_url:url ~to_alias ~path ()
+    | _ ->
+      let path = match file with Some p -> p | None -> contact_command_error "--grant-file input required" in
+      let id = match load_client_identity () with Ok id -> id | Error _ -> contact_command_error "sender identity unavailable" in
+      Relay_contact_store.import_file ~relay_url:url ~to_alias
+        ~sender_pk:(Relay_identity.b64url_encode id.Relay_identity.public_key)
+        ~allow_http:(contact_client_http allow_http) ~path ~now:(Unix.gettimeofday ()) () in
+  match result with
+  | Error code -> contact_command_error code
+  | Ok () -> print_endline {|{"ok":true}|}
+
+let relay_contact_stored_cmd =
+  let open Cmdliner in
+  let+ () = Term.const () in
+  match Relay_contact_store.list_metadata () with
+  | Ok json -> print_endline (Yojson.Safe.to_string json)
+  | Error code -> contact_command_error code
+
 let relay_contact_deliver_cmd =
   let open Cmdliner in
   let relay_url = Arg.(value & opt (some string) None & info ["relay-url"] ~docv:"URL" ~doc:relay_url_resolution_doc) in
   let alias = Arg.(required & opt (some string) None & info ["alias"] ~docv:"ALIAS" ~doc:"Registered sender alias.") in
-  let grant_file = Arg.(required & opt (some string) None & info ["grant-file"] ~docv:"PATH" ~doc:"Private JSON output from contact issue; never passed on argv.") in
-  let message_id = Arg.(required & opt (some string) None & info ["message-id"] ~docv:"ID" ~doc:"Stable idempotency key; reuse only for retries of this message.") in
+  let grant_file = Arg.(required & opt (some string) None & info ["grant-file"] ~docv:"PATH" ~doc:"Private recipient-issued transfer artifact.") in
+  let message_id = Arg.(required & opt (some string) None & info ["message-id"] ~docv:"ID" ~doc:"Stable idempotency key; reuse only for this exact message.") in
   let words = Arg.(non_empty & pos_all string [] & info [] ~docv:"MESSAGE") in
   let+ relay_url = relay_url and+ alias = alias and+ grant_file = grant_file
-  and+ message_id = message_id and+ words = words in
-  let fail msg = Printf.eprintf "error: %s\n%!" msg; exit 1 in
-  let url = match resolve_relay_url relay_url with
-    | Some u -> u | None -> fail (relay_url_required_error ()) in
-  if Uri.scheme (Uri.of_string url) <> Some "https" then
-    fail "contact grants require HTTPS; configure TLS before sending";
-  if message_id = "" then fail "message-id must not be empty";
-  let grant_secret =
-    try
-      let st = Unix.stat grant_file in
-      if st.Unix.st_kind <> Unix.S_REG || st.Unix.st_perm land 0o077 <> 0
-         || st.Unix.st_uid <> Unix.getuid () then
-        fail "grant-file must be an owner-only regular file";
-      let json = Yojson.Safe.from_file grant_file in
-      match Yojson.Safe.Util.member "grant_secret" json with
-      | `String s ->
-          (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s with
-           | Ok raw when String.length raw = 32 -> s
-           | _ -> fail "invalid grant-file secret")
-      | _ -> fail "grant-file has no grant_secret"
-    with _ -> fail "could not load grant-file" in
-  let identity = match load_client_identity () with
-    | Ok id -> id | Error _ -> fail "sender identity missing; register it first" in
-  let body = `Assoc [
-    "protocol", `String "c2c-contact/1";
-    "grant_secret", `String grant_secret;
-    "message_id", `String message_id;
-    "content", `String (String.concat " " words)] in
-  let auth = Relay_signed_ops.sign_request identity ~alias ~meth:"POST"
-    ~path:"/contact/v1/deliver" ~body_str:(Yojson.Safe.to_string body) () in
+  and+ message_id = message_id and+ words = words and+ allow_http = contact_allow_http_term in
+  let url = match resolve_relay_url relay_url with Some u -> u | None -> contact_command_error "relay URL required" in
+  let identity = match load_client_identity () with Ok id -> id | Error _ -> contact_command_error "sender identity unavailable" in
+  let json = match Relay_contact_store.read_private_json grant_file with
+    | Ok j -> j | Error code -> contact_command_error code in
+  let to_alias = match Yojson.Safe.Util.member "recipient_route" json with
+    | `String route -> route | _ -> contact_command_error "grant artifact lacks recipient_route; request an enriched grant" in
+  (match Relay_contact_store.import_file ~relay_url:url ~to_alias
+      ~sender_pk:(Relay_identity.b64url_encode identity.Relay_identity.public_key)
+      ~allow_http:(contact_client_http allow_http) ~path:grant_file ~now:(Unix.gettimeofday ()) () with
+   | Ok () -> () | Error code -> contact_command_error code);
   let client = Relay.Relay_client.make url in
-  let result = Lwt_main.run (Relay.Relay_client.request client ~meth:`POST
-    ~path:"/contact/v1/deliver" ~body ~auth_override:auth ()) in
+  let result = Lwt_main.run (Relay.Relay_client.send_with_identity client ~identity
+      ~from_alias:alias ~to_alias ~content:(String.concat " " words) ~message_id ()) in
   print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result
 
 let relay_contact_deliver =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "deliver" ~doc:"Deliver using a recipient-issued contact grant (HTTPS only).")
+    (Cmdliner.Cmd.info "deliver" ~doc:"Import and deliver with a recipient-issued contact grant (HTTPS by default).")
     relay_contact_deliver_cmd
 
 let relay_contact =
   Cmdliner.Cmd.group
     (Cmdliner.Cmd.info "contact"
        ~doc:"Recipient-owned contact grants (private reachability).")
-    [ relay_contact_issue; relay_contact_list; relay_contact_revoke; relay_contact_deliver ]
+    [ relay_contact_issue; relay_contact_list; relay_contact_revoke; relay_contact_deliver;
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "import" ~doc:"Import a private recipient-issued grant; rotate selection for new sends.") (relay_contact_manage_cmd "import");
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "export" ~doc:"Write selected grant to a new private transfer file.") (relay_contact_manage_cmd "export");
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "disable" ~doc:"Hold this contact route locally; preserve retry history.") (relay_contact_manage_cmd "disable");
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "stored" ~doc:"List sender-side contact metadata without secrets.") relay_contact_stored_cmd ]
 
 let relay_setup =
   Cmdliner.Cmd.v

@@ -130,7 +130,7 @@ let classify ~relay_configured ~has_identity ~has_alias ~registration
    So name the file instead of guessing the scope. That is strictly true in
    every branch, and it is more actionable: it tells the operator exactly
    which file to look at (or which one `c2c relay setup` will write). *)
-type relay_config_location =
+type relay_config_location = Relay_config_location.t =
   | Relay_config_machine of string
   | Relay_config_repo of string
   | Relay_config_explicit of string
