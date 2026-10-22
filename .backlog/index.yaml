@@ -98,7 +98,7 @@ project: c2c
 stats:
     blocked: 1
     done: 429
-    in_progress: 1
-    pending: 19
-    total_tasks: 453
+    in_progress: 8
+    pending: 13
+    total_tasks: 454
 timeline_weeks: 0

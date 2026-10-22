@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-10-22T12:04:57Z"
+claimed_by: codex-trial-truss-jppl
+completed_at: null
 complexity: medium
 created_at: "2026-10-22T11:12:50Z"
 depends_on: []
 estimate_hours: 3
 id: B371
 priority: high
-status: pending
+started_at: "2026-10-22T12:04:57Z"
+status: in_progress
 tags: []
 title: Hermes c2c monitor guidance permits silent watcher expiry and missed coordination wakes
-updated_at: "2026-10-22T11:12:50Z"
+updated_at: "2026-10-22T12:04:57Z"
 ---
 ## Observed dogfood failure
 Hermes tester nas-relay-helper followed c2c CLI-first monitor guidance using the Hermes managed terminal background adapter (Hermes has no Claude/Pi Monitor tool). A bounded watcher with message watch patterns worked for one incoming message, but timeout ended it without a completion wake; it was not rearmed. Several implementation-agent messages accumulated unread, including packaging release and canary authorization. Implementation agent eventually took over packaging because tester never acknowledged. No mail loss established: later poll-inbox recovered the messages; attention/wake continuity failed.
@@ -32,3 +36,6 @@ The timeout wrapper was chosen by the integrating Hermes agent, not a c2c monito
 
 ## Coordination
 Observed during B369/B370 NAS canary preparation with codex-trial-truss-jppl. Generic Hermes integration/docs bug, not a new blocker silently appended to P9 acceptance. This ticket is capture only; no production service change.
+
+
+Execution lane and decision (2026-10-22): Decision: onboarding/watch lifecycle lane with B376, separate from the shared runtime Python implementation. Ship truthful Hermes-specific supervision/expiry/rearm guidance and only necessary adapter support; prove real idle mail and expiry/restart with owned sessions. Coordinate final runtime interface and docs serially, no live-user restarts.

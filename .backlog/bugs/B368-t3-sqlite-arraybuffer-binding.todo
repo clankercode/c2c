@@ -1,15 +1,20 @@
 ---
+claimed_at: "2026-10-22T12:04:57Z"
+claimed_by: codex-trial-truss-jppl
+completed_at: null
 complexity: medium
 created_at: "2026-10-16T14:48:36Z"
 depends_on: []
 estimate_hours: 1
 id: B368
 priority: medium
-status: pending
-tags:
-    - t3
-    - compatibility
+started_at: "2026-10-22T12:04:57Z"
+status: in_progress
+tags: []
 title: T3 SQLite ArrayBuffer binding fails on declared minimum Node 24.13.1
-updated_at: "2026-10-16T14:48:36Z"
+updated_at: "2026-10-22T12:04:57Z"
 ---
 Found during P6.M1.E2.T002 validation. Untouched T3 base e459ee4804c645082f89d6e30d61e4ef039fa355 and current integration both fail existing nodeSqliteClient.test.ts large-parameter test on Node 24.13.1: expected [[65537]], got [[null]] for raw ArrayBuffer. All nine new durability cases pass on that runtime. Node added raw ArrayBuffer/SharedArrayBuffer binding support in 24.21; T3 engines currently declares ^24.13.1. Current supported Node 24.22 validates the feature without this baseline gap. Follow-up should either normalize positional/named raw buffers at the SQLite boundary with byte-content coverage (including reader worker and getter semantics), or deliberately raise/document minimum runtime. Do not weaken the existing assertion. Receipt: /tmp/t3-c2c-validation-notes.md entries 50-52 and x-p35 isolated baseline log. This is pre-existing and not a blocker for c2c feature on current Node 24 LTS.
+
+
+Execution lane and decision (2026-10-22): Decision: dedicated T3 SQLite compatibility lane in the authoritative sibling repository /home/xertrov/src/refs/t3code. Current engines still declares ^24.13.1. Preserve that minimum and normalize raw positional/named buffers at the SQLite boundary with byte/getter/reader-worker regression coverage; verify existing fix before implementing. Do not alter live T3 or the frozen P9 proof candidate.
