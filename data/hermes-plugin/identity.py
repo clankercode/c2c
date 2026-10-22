@@ -1,174 +1,221 @@
-"""Identity — auto-register a c2c alias on session start.
+"""Profile-owned session bindings; no process-wide current identity or env writes.
 
-Called from the on_session_start hook. Pins the session id and client type in
-the process environment FIRST, then checks `c2c whoami` and registers if
-needed.
-
-Ordering matters: c2c resolves a session's identity from C2C_MCP_SESSION_ID,
-falling back to the host client's own env markers. A Hermes launched from
-inside another agent's shell inherits that parent's session id (the same
-footgun c2c's CLAUDE.md documents for `kimi -p` inside Claude Code), so the
-first `whoami` would adopt — and the first `register` would rename — the
-PARENT's registration. Setting the env var before any c2c call is the only
-lever: `c2c register` does accept `--session-id`, but `whoami` does not, and
-every later tool/command call needs the same identity anyway.
+Hermes hooks pass a durable session id. TUI/desktop tools and commands also
+carry a task-local route key (gateway.session_context.bound_session_key).
+The manager's immutable home owns every binding. Missing or contradictory
+ownership fails before any c2c subprocess is invoked.
 """
 
-import os
-import logging
 import hashlib
-import time
-
-logger = logging.getLogger("c2c.identity")
-
-# Module-level state — the current alias, set after registration.
-_current_alias = None
-_current_session_id = None
-
-# c2c session ids and aliases must match [A-Za-z0-9._-]{1,64} and must not
-# start with '.' (ocaml/c2c_name.ml). Anything else is rejected outright.
-_SAFE_CHARS = set(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789._-"
-)
+import os
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType
 
 
-def get_alias():
-    """Return the current c2c alias (or None if not registered)."""
-    return _current_alias
+class OwnershipError(ValueError):
+    pass
 
 
-def get_session_id():
-    """Return the current c2c session id (or None)."""
-    return _current_session_id
+def _text(value):
+    return value if isinstance(value, str) and value.strip() == value and value else ""
 
 
-def _sanitize(raw, fallback):
-    """Coerce `raw` into a name c2c will accept, else return `fallback`."""
-    if not raw:
-        return fallback
-    cleaned = "".join(c if c in _SAFE_CHARS else "-" for c in str(raw))
-    cleaned = cleaned.strip("-")[:64]
-    if not cleaned or cleaned[0] == ".":
-        return fallback
-    return cleaned
-
-
-def _generate_alias(session_id):
-    """Generate a deterministic hermes-<hash> alias from the session id."""
-    base = session_id or str(time.time())
-    h = hashlib.sha256(base.encode()).hexdigest()[:8]
-    return f"hermes-{h}"
-
-
-def _resolve_session_id(payload_session_id):
-    """Decide which session id this Hermes process owns.
-
-    Priority:
-      1. the id Hermes handed us in the on_session_start payload;
-      2. an existing C2C_MCP_SESSION_ID that is already ours (`hermes-*`) —
-         e.g. exported by a future managed launcher;
-      3. a process-local id derived from pid + boot time.
-
-    An inherited, non-hermes C2C_MCP_SESSION_ID is deliberately NOT trusted:
-    it belongs to whichever agent spawned us.
-    """
-    if payload_session_id:
-        return _sanitize(payload_session_id, _generate_alias(payload_session_id))
-    inherited = os.environ.get("C2C_MCP_SESSION_ID", "")
-    if inherited.startswith("hermes-"):
-        return inherited
-    seed = f"{os.getpid()}:{time.time()}"
-    return "hermes-" + hashlib.sha256(seed.encode()).hexdigest()[:16]
-
-
-def register_identity(session_id=None, model=None, platform=None, **kwargs):
-    """on_session_start hook: auto-register c2c identity.
-
-    Accepts **kwargs for forward compatibility — the hook may receive
-    additional parameters in future Hermes versions.
-    """
-    global _current_alias, _current_session_id
-
-    # Pin client type so c2c doesn't misidentify us (E9), and pin the session
-    # id BEFORE the first c2c call so we cannot adopt a parent agent's row.
-    os.environ["C2C_MCP_CLIENT_TYPE"] = "hermes"
-    resolved_sid = _resolve_session_id(session_id)
-    os.environ["C2C_MCP_SESSION_ID"] = resolved_sid
-    _current_session_id = resolved_sid
-
-    from .c2c_cli import C2cCli
-
-    cli = C2cCli()
-    if not cli.available:
-        logger.warning("[c2c] binary not found — skipping identity registration. "
-                        "Set C2C_BIN or install c2c.")
-        return
-
-    # Check if already registered.
+def _bound_key():
     try:
-        who = cli.whoami()
-        if isinstance(who, dict) and who.get("alias") and "error" not in who:
-            _current_alias = who["alias"]
-            _current_session_id = who.get("session_id") or resolved_sid
-            logger.info("[c2c] already registered as %s (session %s)",
-                        _current_alias, _current_session_id)
-            _auto_join_rooms(cli)
-            return
-    except Exception as e:
-        logger.debug("[c2c] whoami check failed: %s", e)
+        from gateway.session_context import bound_session_key
+        return _text(bound_session_key())
+    except ImportError:
+        return ""
 
-    # Not registered — register now. The alias is passed through the env, NOT
-    # through `--alias`: a `hermes-` prefixed name is a reserved client prefix
-    # and `--alias` is the user-supplied path, which the blocklist refuses.
-    #
-    # ..._FROM_AUTO_GEN=1 asserts "c2c's own generator produced this name" and
-    # is what lets a reserved `hermes-` prefix through. Setting it for an
-    # OPERATOR-supplied alias would launder that operator's name past the very
-    # blocklist check `hermes-` was just added to, so it is set only for names
-    # this plugin generated itself.
-    operator_alias = _sanitize(os.environ.get("C2C_MCP_AUTO_REGISTER_ALIAS"), "")
-    if operator_alias:
-        alias = operator_alias
-        # Deliberately not cleared: an operator who exported FROM_AUTO_GEN
-        # themselves has made that claim explicitly. We just never make it
-        # on their behalf.
-    else:
-        alias = _generate_alias(resolved_sid)
-        os.environ["C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"] = "1"
-    os.environ["C2C_MCP_AUTO_REGISTER_ALIAS"] = alias
 
-    try:
-        result = cli.register()
-        if isinstance(result, dict) and result.get("alias"):
-            _current_alias = result["alias"]
-            _current_session_id = result.get("session_id") or resolved_sid
-        elif isinstance(result, dict) and result.get("error"):
-            logger.warning("[c2c] registration failed: %s", result.get("error"))
-            # Try whoami in case we were already registered and the error is a duplicate.
+@dataclass(frozen=True)
+class Binding:
+    profile_home: str
+    session_id: str
+    session_key: str
+    broker_session_id: str
+    broker_root: str
+    alias: str
+    cwd: str
+    surface: str
+
+
+class Session:
+    """One immutable identity plus its delivery/lifecycle state."""
+
+    def __init__(self, binding, cli, ctx):
+        from .delivery import Delivery
+        self.binding = binding
+        self.cli = cli
+        self.ctx = ctx
+        self.active = True
+        self.delivery = Delivery(self)
+        self.watcher = None
+
+    def owned(self):
+        """A watcher cannot borrow a replaced profile/CLI owner."""
+        try:
+            manager = self.ctx._manager
+            if str(Path(manager.home_path).resolve()) != self.binding.profile_home:
+                return False
+            cli = manager._cli_ref
+            if cli is not None:
+                return (self.binding.surface == "cli"
+                        and getattr(cli, "session_id", None) == self.binding.session_id)
+            return self.binding.surface in ("tui", "desktop")
+        except Exception:
+            return False
+
+
+class SessionRegistry:
+    """Owned by exactly one PluginContext, never shared across profiles."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        manager = getattr(ctx, "_manager", None)
+        home = getattr(manager, "home_path", None)
+        self.home = str(Path(home).resolve()) if home else ""
+        snapshot = dict(os.environ)
+        if self.home:
+            snapshot["HERMES_HOME"] = self.home
+        self.env = MappingProxyType(snapshot)
+        self._sessions = {}
+        self._pending = set()
+        self._lock = threading.Lock()
+
+    def _coordinates(self, *, session_id=None, session_key=None, profile_home=None, **kwargs):
+        if not self.home:
+            raise OwnershipError("Hermes manager profile home is required")
+        manager_home = getattr(getattr(self.ctx, "_manager", None), "home_path", None)
+        if not manager_home or str(Path(manager_home).resolve()) != self.home:
+            raise OwnershipError("Hermes profile owner changed")
+        if profile_home is not None and str(Path(profile_home).resolve()) != self.home:
+            raise OwnershipError("invocation belongs to a different profile")
+        sid, key, bound = _text(session_id), _text(session_key), _bound_key()
+        if session_id is not None and not sid or session_key is not None and not key:
+            raise OwnershipError("invalid session identity")
+        if key and bound and key != bound:
+            raise OwnershipError("invocation contradicts Hermes session key")
+        key = key or bound
+        cli = getattr(self.ctx._manager, "_cli_ref", None)
+        if cli is not None:
+            cli_sid = _text(getattr(cli, "session_id", None))
+            if not cli_sid or sid and sid != cli_sid or key and key != cli_sid:
+                raise OwnershipError("invocation does not own the classic CLI")
+            sid, key = cli_sid, cli_sid
+        if not sid and not key:
+            raise OwnershipError("explicit invocation session identity is required")
+        return sid, key
+
+    def resolve(self, **invocation):
+        sid, key = self._coordinates(**invocation)
+        with self._lock:
+            matches = [s for s in self._sessions.values()
+                       if (not sid or s.binding.session_id == sid)
+                       and (not key or s.binding.session_key == key) and s.active and s.owned()]
+        if len(matches) != 1:
+            raise OwnershipError("unknown, ended, or ambiguous Hermes session")
+        return matches[0]
+
+    def start(self, **invocation):
+        from .c2c_cli import C2cCli
+        sid, key = self._coordinates(**invocation)
+        if not sid or not key:
+            raise OwnershipError("session start requires a durable id and owned route key")
+        surface = self.ctx.session_surface()
+        if surface not in ("cli", "tui", "desktop"):
+            # No automatic messaging-gateway enrollment or wake.
+            raise OwnershipError("unsupported automatic delivery surface")
+        cwd = self.ctx.session_cwd()
+        if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
+            raise OwnershipError("session working directory is required")
+        slot = (sid, key)
+        with self._lock:
+            existing = self._sessions.get(slot)
+            if existing:
+                if not existing.active or existing.binding.cwd != os.path.realpath(cwd):
+                    raise OwnershipError("session binding cannot be replaced")
+                return existing
+            if slot in self._pending:
+                raise OwnershipError("session registration is already in progress")
+            self._pending.add(slot)
+        try:
+            # Length-framed profile+session+route avoids same-ID profile collisions
+            # and c2c name truncation/sanitization collisions.
+            frame = "".join(f"{len(v)}:{v}" for v in (self.home, sid, key))
+            broker_sid = "hermes-" + hashlib.sha256(frame.encode()).hexdigest()[:32]
+            env = dict(self.env)
+            env.update(C2C_MCP_SESSION_ID=broker_sid, C2C_MCP_CLIENT_TYPE="hermes")
+            alias = env.get("C2C_MCP_AUTO_REGISTER_ALIAS")
+            if not alias:
+                env["C2C_MCP_AUTO_REGISTER_ALIAS"] = broker_sid
+                env["C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"] = "1"
+            cli = C2cCli(env=env, cwd=cwd)
+            root = cli.broker_root()
+            if not root or not os.path.isabs(root):
+                raise OwnershipError("could not resolve session broker")
+            root = os.path.realpath(root)
+            env["C2C_MCP_BROKER_ROOT"] = root
+            cli = C2cCli(env=env, cwd=cwd)
             try:
                 who = cli.whoami()
-                if isinstance(who, dict) and who.get("alias"):
-                    _current_alias = who["alias"]
-                    _current_session_id = who.get("session_id") or resolved_sid
             except Exception:
-                pass
-        else:
-            _current_alias = alias
-        logger.info("[c2c] registered as %s (session %s)", _current_alias, _current_session_id)
-        _auto_join_rooms(cli)
-    except Exception as e:
-        logger.warning("[c2c] registration error: %s", e)
+                who = None
+            if not isinstance(who, dict) or who.get("error") or not who.get("alias"):
+                who = cli.register()
+            if (not isinstance(who, dict) or who.get("error")
+                    or who.get("session_id") != broker_sid or not _text(who.get("alias"))):
+                raise OwnershipError("c2c registration did not confirm exact session ownership")
+            binding = Binding(self.home, sid, key, broker_sid, root, who["alias"],
+                              os.path.realpath(cwd), surface)
+            session = Session(binding, cli, self.ctx)
+            with self._lock:
+                self._sessions[slot] = session
+            # Room membership belongs to this immutable binding too.
+            for room in env.get("C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge").split(","):
+                if room.strip():
+                    try:
+                        cli.rooms_join(room.strip())
+                    except Exception:
+                        pass
+            return session
+        finally:
+            with self._lock:
+                self._pending.discard(slot)
 
+    def end(self, **invocation):
+        session = self.resolve(**invocation)
+        session.delivery.close()
+        if session.watcher:
+            session.watcher.stop()
 
-def _auto_join_rooms(cli):
-    """Auto-join default rooms from C2C_MCP_AUTO_JOIN_ROOMS env var."""
-    rooms_env = os.environ.get("C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge")
-    rooms = [r.strip() for r in rooms_env.split(",") if r.strip()]
-    for room in rooms:
-        try:
-            cli.rooms_join(room)
-            logger.info("[c2c] auto-joined room: %s", room)
-        except Exception as e:
-            logger.debug("[c2c] auto-join %s failed: %s", room, e)
+    def close(self):
+        """Plugin unload invalidates all old callbacks and watcher bindings."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+        for session in sessions:
+            session.delivery.close()
+            if session.watcher:
+                session.watcher.stop()
+
+    def command(self, fn):
+        """Resolve host kwargs/context before running a slash command."""
+        def invoke(args_str, **kwargs):
+            try:
+                session = self.resolve(**kwargs)
+                return fn(args_str, session)
+            except Exception:
+                return '{"error": "c2c invocation refused or failed"}'
+        return invoke
+
+    def tool(self, fn):
+        """Tool parameters never supply routing identity; host context does."""
+        def invoke(params, **kwargs):
+            try:
+                session = self.resolve(**kwargs)
+                return fn(params, session)
+            except Exception:
+                return '{"error": "c2c invocation refused or failed"}'
+        return invoke

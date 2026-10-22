@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import logging
+from types import MappingProxyType
 
 logger = logging.getLogger("c2c.cli")
 
@@ -34,18 +35,21 @@ class C2cError(Exception):
 class C2cCli:
     """Wraps the `c2c` binary, always requesting JSON output."""
 
-    def __init__(self, binary=None):
-        self._binary = binary or self._resolve_binary()
-        # Ensure C2C_MCP_CLIENT_TYPE is pinned so c2c doesn't misidentify us.
-        if not os.environ.get("C2C_MCP_CLIENT_TYPE"):
-            os.environ["C2C_MCP_CLIENT_TYPE"] = "hermes"
+    def __init__(self, binary=None, *, env=None, cwd=None):
+        # Snapshot once. A later profile/session must never change this client's
+        # sender, broker, PATH, or working directory.
+        snapshot = dict(os.environ if env is None else env)
+        snapshot["C2C_MCP_CLIENT_TYPE"] = "hermes"
+        self.env = MappingProxyType(snapshot)
+        self.cwd = os.path.abspath(cwd or os.getcwd())
+        self._binary = binary or self._resolve_binary(snapshot)
 
     @staticmethod
-    def _resolve_binary():
-        env_bin = os.environ.get("C2C_BIN")
+    def _resolve_binary(env):
+        env_bin = env.get("C2C_BIN")
         if env_bin and os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
             return env_bin
-        return shutil.which("c2c")
+        return shutil.which("c2c", path=env.get("PATH", os.defpath))
 
     @property
     def available(self):
@@ -75,16 +79,17 @@ class C2cCli:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                env=os.environ.copy(),
+                env=dict(self.env),
+                cwd=self.cwd,
             )
         except subprocess.TimeoutExpired:
-            return {"error": f"c2c {' '.join(args)} timed out after {timeout}s"}
+            return {"error": f"c2c command timed out after {timeout}s"}
         except FileNotFoundError:
             return {"error": "c2c binary not found", "hint": "It was on PATH at init but is gone now"}
 
         if proc.returncode != 0:
             raise C2cError(
-                f"c2c {' '.join(args)} exited {proc.returncode}",
+                f"c2c command exited {proc.returncode}",
                 proc.returncode,
                 proc.stderr.strip(),
             )
@@ -207,6 +212,12 @@ class C2cCli:
     def peek_inbox(self):
         """Peek at inbox without draining."""
         return self._run(["peek-inbox"])
+
+    def ack_inbox(self, message_ids):
+        """Remove only accepted IDs. Unsupported binaries leave mail intact."""
+        if not message_ids or any(not isinstance(i, str) or not i for i in message_ids):
+            raise ValueError("selected message IDs required")
+        return self._run(["ack-inbox"] + [f"--message-id={i}" for i in message_ids])
 
     def history(self):
         """Get message history."""

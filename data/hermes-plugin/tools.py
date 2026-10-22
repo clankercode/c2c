@@ -11,17 +11,6 @@ import logging
 logger = logging.getLogger("c2c.tools")
 
 
-def _safe_handler(fn):
-    """Wrap a handler so exceptions return an error JSON instead of crashing."""
-    def wrapper(params, **kwargs):
-        del kwargs
-        try:
-            return fn(params)
-        except Exception as e:
-            return json.dumps({"error": str(e)})
-    return wrapper
-
-
 def _json_result(data):
     """Serialize a result to JSON string (tool handlers must return strings)."""
     if isinstance(data, str):
@@ -29,12 +18,9 @@ def _json_result(data):
     return json.dumps(data, default=str)
 
 
-def register_all_tools(ctx):
+def register_all_tools(ctx, registry):
     """Register all c2c LLM-callable tools."""
 
-    from .c2c_cli import C2cCli
-
-    cli = C2cCli()
 
     # -- c2c_send -----------------------------------------------------------
     send_schema = {
@@ -54,9 +40,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_send(params):
-        return _json_result(cli.send(
+    @registry.tool
+    def handle_send(params, session):
+        return _json_result(session.cli.send(
             params["to"], params["body"],
             ephemeral=params.get("ephemeral", False),
             deferrable=params.get("deferrable", False),
@@ -74,9 +60,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_list(params):
-        return _json_result(cli.list())
+    @registry.tool
+    def handle_list(params, session):
+        return _json_result(session.cli.list())
 
     ctx.register_tool(name="c2c_list", toolset="c2c", schema=list_schema,
                       handler=handle_list, description="List c2c peers.")
@@ -84,13 +70,13 @@ def register_all_tools(ctx):
     # -- c2c_poll_inbox ----------------------------------------------------
     poll_schema = {
         "name": "c2c_poll_inbox",
-        "description": "Drain your c2c inbox — returns all pending messages and removes them.",
+        "description": "Read pending c2c mail and acknowledge selected returned IDs. Concurrent delivery may return an empty batch.",
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_poll(params):
-        return _json_result(cli.poll_inbox())
+    @registry.tool
+    def handle_poll(params, session):
+        return _json_result(session.delivery.poll())
 
     ctx.register_tool(name="c2c_poll_inbox", toolset="c2c", schema=poll_schema,
                       handler=handle_poll, description="Drain c2c inbox.")
@@ -102,9 +88,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_peek(params):
-        return _json_result(cli.peek_inbox())
+    @registry.tool
+    def handle_peek(params, session):
+        return _json_result(session.cli.peek_inbox())
 
     ctx.register_tool(name="c2c_peek_inbox", toolset="c2c", schema=peek_schema,
                       handler=handle_peek, description="Peek at c2c inbox.")
@@ -120,9 +106,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_join(params):
-        return _json_result(cli.rooms_join(params["room"]))
+    @registry.tool
+    def handle_join(params, session):
+        return _json_result(session.cli.rooms_join(params["room"]))
 
     ctx.register_tool(name="c2c_join_room", toolset="c2c", schema=join_schema,
                       handler=handle_join, description="Join a c2c room.")
@@ -141,9 +127,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_send_room(params):
-        return _json_result(cli.rooms_send(params["room"], params["body"]))
+    @registry.tool
+    def handle_send_room(params, session):
+        return _json_result(session.cli.rooms_send(params["room"], params["body"]))
 
     ctx.register_tool(name="c2c_send_room", toolset="c2c", schema=send_room_schema,
                       handler=handle_send_room, description="Send a message to a c2c room.")
@@ -155,9 +141,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_my_rooms(params):
-        return _json_result(cli.rooms_my_rooms())
+    @registry.tool
+    def handle_my_rooms(params, session):
+        return _json_result(session.cli.rooms_my_rooms())
 
     ctx.register_tool(name="c2c_my_rooms", toolset="c2c", schema=my_rooms_schema,
                       handler=handle_my_rooms, description="List your c2c rooms.")
@@ -169,9 +155,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_list_rooms(params):
-        return _json_result(cli.rooms_list())
+    @registry.tool
+    def handle_list_rooms(params, session):
+        return _json_result(session.cli.rooms_list())
 
     ctx.register_tool(name="c2c_list_rooms", toolset="c2c", schema=list_rooms_schema,
                       handler=handle_list_rooms, description="List all c2c rooms.")
@@ -187,9 +173,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_leave(params):
-        return _json_result(cli.rooms_leave(params["room"]))
+    @registry.tool
+    def handle_leave(params, session):
+        return _json_result(session.cli.rooms_leave(params["room"]))
 
     ctx.register_tool(name="c2c_leave_room", toolset="c2c", schema=leave_schema,
                       handler=handle_leave, description="Leave a c2c room.")
@@ -205,9 +191,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_knock(params):
-        return _json_result(cli.rooms_knock(params["room"]))
+    @registry.tool
+    def handle_knock(params, session):
+        return _json_result(session.cli.rooms_knock(params["room"]))
 
     ctx.register_tool(name="c2c_knock_room", toolset="c2c", schema=knock_schema,
                       handler=handle_knock, description="Knock on a c2c room.")
@@ -223,9 +209,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_list_knocks(params):
-        return _json_result(cli.rooms_knocks(params["room"]))
+    @registry.tool
+    def handle_list_knocks(params, session):
+        return _json_result(session.cli.rooms_knocks(params["room"]))
 
     ctx.register_tool(name="c2c_list_knocks", toolset="c2c", schema=list_knocks_schema,
                       handler=handle_list_knocks, description="List pending knocks for a room.")
@@ -244,9 +230,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_approve_knock(params):
-        return _json_result(cli.rooms_approve_knock(params["room"], params["alias"]))
+    @registry.tool
+    def handle_approve_knock(params, session):
+        return _json_result(session.cli.rooms_approve_knock(params["room"], params["alias"]))
 
     ctx.register_tool(name="c2c_approve_knock", toolset="c2c", schema=approve_knock_schema,
                       handler=handle_approve_knock, description="Approve a room knock request.")
@@ -265,9 +251,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_deny_knock(params):
-        return _json_result(cli.rooms_deny_knock(params["room"], params["alias"]))
+    @registry.tool
+    def handle_deny_knock(params, session):
+        return _json_result(session.cli.rooms_deny_knock(params["room"], params["alias"]))
 
     ctx.register_tool(name="c2c_deny_knock", toolset="c2c", schema=deny_knock_schema,
                       handler=handle_deny_knock, description="Deny a room knock request.")
@@ -286,9 +272,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_room_history(params):
-        return _json_result(cli.rooms_history(params["room"], limit=params.get("limit")))
+    @registry.tool
+    def handle_room_history(params, session):
+        return _json_result(session.cli.rooms_history(params["room"], limit=params.get("limit")))
 
     ctx.register_tool(name="c2c_room_history", toolset="c2c", schema=room_history_schema,
                       handler=handle_room_history, description="Get c2c room history.")
@@ -304,9 +290,9 @@ def register_all_tools(ctx):
         },
     }
 
-    @_safe_handler
-    def handle_send_all(params):
-        return _json_result(cli.send_all(params["body"]))
+    @registry.tool
+    def handle_send_all(params, session):
+        return _json_result(session.cli.send_all(params["body"]))
 
     ctx.register_tool(name="c2c_send_all", toolset="c2c", schema=send_all_schema,
                       handler=handle_send_all, description="Broadcast to all c2c peers.")
@@ -318,9 +304,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_history(params):
-        return _json_result(cli.history())
+    @registry.tool
+    def handle_history(params, session):
+        return _json_result(session.cli.history())
 
     ctx.register_tool(name="c2c_history", toolset="c2c", schema=history_schema,
                       handler=handle_history, description="Get c2c message history.")
@@ -332,9 +318,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_health(params):
-        return _json_result(cli.health())
+    @registry.tool
+    def handle_health(params, session):
+        return _json_result(session.cli.health())
 
     ctx.register_tool(name="c2c_health", toolset="c2c", schema=health_schema,
                       handler=handle_health, description="Check c2c broker health.")
@@ -346,9 +332,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_status(params):
-        return _json_result(cli.status())
+    @registry.tool
+    def handle_status(params, session):
+        return _json_result(session.cli.status())
 
     ctx.register_tool(name="c2c_status", toolset="c2c", schema=status_schema,
                       handler=handle_status, description="Get c2c broker status.")
@@ -360,9 +346,9 @@ def register_all_tools(ctx):
         "parameters": {"type": "object", "properties": {}},
     }
 
-    @_safe_handler
-    def handle_whoami(params):
-        return _json_result(cli.whoami())
+    @registry.tool
+    def handle_whoami(params, session):
+        return _json_result(session.cli.whoami())
 
     ctx.register_tool(name="c2c_whoami", toolset="c2c", schema=whoami_schema,
                       handler=handle_whoami, description="Check your c2c identity.")
