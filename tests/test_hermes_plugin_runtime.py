@@ -344,6 +344,32 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('error', self.ctx.commands['c2c-poll']('', session_id='A'))
         self.assertEqual(FakeCli.calls, before)
 
+    def test_finalize_fences_pending_registration_and_late_start(self):
+        entered, release = threading.Event(), threading.Event()
+        original = FakeCli.whoami
+        def blocked_whoami(cli):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return original(cli)
+        with patch.object(FakeCli, 'whoami', blocked_whoami), patch.object(broker_watcher.BrokerWatcher, 'start') as start:
+            worker = threading.Thread(target=lambda: self.ctx.hooks['on_session_start'](
+                session_id='pending', session_key='route-pending'))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                self.ctx.hooks['on_session_finalize'](session_id='pending')
+            finally:
+                release.set()
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            start.assert_not_called()
+        before = list(FakeCli.calls)
+        self.assertIn('error', self.ctx.tools['c2c_send'](
+            {'to': 'peer', 'body': 'forbidden'}, session_id='pending'))
+        self.assertIn('error', self.ctx.commands['c2c-poll']('', session_id='pending'))
+        self.ctx.hooks['on_session_start'](session_id='pending', session_key='route-pending')
+        self.assertEqual(before, FakeCli.calls)
+
     def test_foreign_ambient_registration_markers_are_scrubbed(self):
         foreign = {'C2C_MCP_AUTO_REGISTER_ALIAS': 'foreign-parent',
                    'C2C_MCP_CLIENT_PID': '1', 'C2C_MCP_SESSION_ID': 'foreign',

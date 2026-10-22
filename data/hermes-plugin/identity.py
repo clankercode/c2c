@@ -94,6 +94,7 @@ class SessionRegistry:
         self.env = MappingProxyType(snapshot)
         self._sessions = {}
         self._pending = set()
+        self._ended = set()
         self._lock = threading.Lock()
         self._closed = False
 
@@ -150,6 +151,8 @@ class SessionRegistry:
         with self._lock:
             if self._closed:
                 raise OwnershipError("plugin was unloaded")
+            if slot in self._ended:
+                raise OwnershipError("session was finalized")
             existing = self._sessions.get(slot)
             if existing:
                 if not existing.active or existing.binding.cwd != os.path.realpath(cwd):
@@ -195,8 +198,8 @@ class SessionRegistry:
                               os.path.realpath(cwd), surface)
             session = Session(binding, cli, self.ctx)
             with self._lock:
-                if self._closed:
-                    raise OwnershipError("plugin unloaded during registration")
+                if self._closed or slot in self._ended:
+                    raise OwnershipError("session finalized or plugin unloaded during registration")
                 self._sessions[slot] = session
             # Room membership belongs to this immutable binding too.
             for room in env.get("C2C_MCP_AUTO_JOIN_ROOMS", "swarm-lounge").split(","):
@@ -211,9 +214,22 @@ class SessionRegistry:
                 self._pending.discard(slot)
 
     def end(self, **invocation):
-        session = self.resolve(**invocation)
-        session.delivery.close()
-        if session.watcher:
+        sid, key = self._coordinates(**invocation)
+        with self._lock:
+            # Finalization must also fence workers still doing registration I/O.
+            # A timed-out on_session_start may finish after the native session
+            # has ended; its coordinates remain invalid for this registry.
+            candidates = self._pending | self._sessions.keys()
+            matches = [slot for slot in candidates
+                       if (not sid or slot[0] == sid) and (not key or slot[1] == key)]
+            if len(matches) != 1:
+                raise OwnershipError("unknown or ambiguous finalized session")
+            slot = matches[0]
+            self._ended.add(slot)
+            session = self._sessions.get(slot)
+            if session:
+                session.delivery.close()
+        if session and session.watcher:
             session.watcher.stop()
 
     def close(self):
