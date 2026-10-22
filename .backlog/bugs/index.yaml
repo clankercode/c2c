@@ -374,3 +374,4 @@ bugs:
     - file: B375-hermes-watcher-and-pre-llm-dra.todo
     - file: B376-recommend-mcp-tool-installatio.todo
     - file: B377-host-mailbox-rejects-hermes-ow.todo
+    - file: B378-hermes-c2c-message-styling-mus.todo

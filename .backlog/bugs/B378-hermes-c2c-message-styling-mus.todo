@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-10-22T19:09:00Z"
+depends_on: []
+estimate_hours: 1
+id: B378
+priority: medium
+status: pending
+tags: []
+title: Hermes c2c message styling must cover TUI and CLI as well as gateway platforms
+updated_at: "2026-10-22T19:09:00Z"
+---
+Requirement from Max during Hermes c2c dogfooding: readable styling for incoming messages and outgoing send tool calls must cover Hermes TUI and native CLI, not only Telegram. Share semantic envelope/status formatting across surfaces while keeping Telegram/native-entity and TUI/CLI renderers separate. Show sender/recipient, visually distinct literal body, compact metadata, and accurate queued/offline/error/unknown status; never imply queue acceptance proves delivery. Preserve untrusted peer-data boundary, literal markup and multiline/Unicode bodies. Provide usable plain-text output when rich/ANSI unsupported. Telegram custom plugin has working visually approved incoming blockquotes and outgoing receipt cards, but TUI/CLI coverage is not implemented by that artifact. Acceptance: inspect both live TUI and CLI rendering, public regression tests for MCP/native send results and inbound data, long/unicode/hostile markup, non-TTY/plain fallback. Coordinate with existing Hermes integration work and avoid duplicate overlapping task ownership.
