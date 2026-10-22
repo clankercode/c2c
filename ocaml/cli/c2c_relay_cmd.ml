@@ -2566,11 +2566,59 @@ let relay_contact_revoke =
     (Cmdliner.Cmd.info "revoke" ~doc:"Revoke a contact grant by id.")
     relay_contact_revoke_cmd
 
+let relay_contact_deliver_cmd =
+  let open Cmdliner in
+  let relay_url = Arg.(value & opt (some string) None & info ["relay-url"] ~docv:"URL" ~doc:relay_url_resolution_doc) in
+  let alias = Arg.(required & opt (some string) None & info ["alias"] ~docv:"ALIAS" ~doc:"Registered sender alias.") in
+  let grant_file = Arg.(required & opt (some string) None & info ["grant-file"] ~docv:"PATH" ~doc:"Private JSON output from contact issue; never passed on argv.") in
+  let message_id = Arg.(required & opt (some string) None & info ["message-id"] ~docv:"ID" ~doc:"Stable idempotency key; reuse only for retries of this message.") in
+  let words = Arg.(non_empty & pos_all string [] & info [] ~docv:"MESSAGE") in
+  let+ relay_url = relay_url and+ alias = alias and+ grant_file = grant_file
+  and+ message_id = message_id and+ words = words in
+  let fail msg = Printf.eprintf "error: %s\n%!" msg; exit 1 in
+  let url = match resolve_relay_url relay_url with
+    | Some u -> u | None -> fail (relay_url_required_error ()) in
+  if Uri.scheme (Uri.of_string url) <> Some "https" then
+    fail "contact grants require HTTPS; configure TLS before sending";
+  if message_id = "" then fail "message-id must not be empty";
+  let grant_secret =
+    try
+      let st = Unix.stat grant_file in
+      if st.Unix.st_kind <> Unix.S_REG || st.Unix.st_perm land 0o077 <> 0
+         || st.Unix.st_uid <> Unix.getuid () then
+        fail "grant-file must be an owner-only regular file";
+      let json = Yojson.Safe.from_file grant_file in
+      match Yojson.Safe.Util.member "grant_secret" json with
+      | `String s ->
+          (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s with
+           | Ok raw when String.length raw = 32 -> s
+           | _ -> fail "invalid grant-file secret")
+      | _ -> fail "grant-file has no grant_secret"
+    with _ -> fail "could not load grant-file" in
+  let identity = match load_client_identity () with
+    | Ok id -> id | Error _ -> fail "sender identity missing; register it first" in
+  let body = `Assoc [
+    "protocol", `String "c2c-contact/1";
+    "grant_secret", `String grant_secret;
+    "message_id", `String message_id;
+    "content", `String (String.concat " " words)] in
+  let auth = Relay_signed_ops.sign_request identity ~alias ~meth:"POST"
+    ~path:"/contact/v1/deliver" ~body_str:(Yojson.Safe.to_string body) () in
+  let client = Relay.Relay_client.make url in
+  let result = Lwt_main.run (Relay.Relay_client.request client ~meth:`POST
+    ~path:"/contact/v1/deliver" ~body ~auth_override:auth ()) in
+  print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result
+
+let relay_contact_deliver =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "deliver" ~doc:"Deliver using a recipient-issued contact grant (HTTPS only).")
+    relay_contact_deliver_cmd
+
 let relay_contact =
   Cmdliner.Cmd.group
     (Cmdliner.Cmd.info "contact"
        ~doc:"Recipient-owned contact grants (private reachability).")
-    [ relay_contact_issue; relay_contact_list; relay_contact_revoke ]
+    [ relay_contact_issue; relay_contact_list; relay_contact_revoke; relay_contact_deliver ]
 
 let relay_setup =
   Cmdliner.Cmd.v
