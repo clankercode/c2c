@@ -7,6 +7,13 @@ nav_label: Changelog
 
 # Changelog
 
+## 0.19.1 — 2026-10-23
+
+- **Hermes message cards.** Native and MCP messages show sender, recipient, literal content and honest queue status in the CLI and TUI, with plain-text output when ANSI is unavailable. Live terminal validation covers long bodies, Unicode, hostile markup and selected acknowledgements. A queued send does not confirm recipient delivery; wake still requires explicit consent, a verified conversation target and a live router.
+- **Complete host mailbox namespaces.** Pi is supported and `codex-headless` normalizes to `codex`. Existing Pi registrations and legacy bindings remain compatible, while ownership checks, collision protection and generation fencing continue to protect application-owned mailboxes.
+- **Public T3 connector validation completed.** P9 now includes bidirectional public-relay evidence for idle and active delivery, service and T3 restarts, canonical replies, duplicate suppression and cleanup, plus an independent final audit. The proof uses a synthetic provider and driver-executed replies; it does not establish recovery from a real model outage.
+- **Hermes distribution checks.** Canonical guidance and embedded copies are checked byte-for-byte, including the companion Telegram formatting and silent-transport contract. Installed Telegram rendering and transport remain separate from the verified CLI/TUI behavior.
+
 ## 0.19.0 — 2026-10-23
 
 - **Hermes integration and safe delivery.** Plugin-first installation works without an MCP binary; `c2c install hermes --with-mcp` opts into tools with an isolated connection identity. Session/profile-bound delivery uses selected-message acknowledgement and retains mail when injection is declined or its target is unsupported. Watcher/pre-LLM reservations and durable ACK retries prevent competing drains. Wake remains conditional on an explicitly consented, verified host target; MCP alone does not wake conversations.

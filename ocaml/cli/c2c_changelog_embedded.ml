@@ -22,6 +22,19 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.19.1 — 2026-10-23
+
+### Hermes message cards validated in the real CLI and TUI
+summary: Native and MCP messages display sender, recipient, literal bodies and honest queue status, including long Unicode content and hostile markup. Queued is not a delivery receipt. Wake still requires explicit injection consent, an exact verified conversation target and a live router; MCP alone does not wake a conversation.
+clients: hermes
+
+### Pi and headless Codex host mailbox namespaces
+summary: Pi host mailboxes are supported and codex-headless uses the codex namespace. Existing Pi registrations and legacy bindings remain compatible, with exact ownership checks and generation fencing preserved.
+clients: pi, codex
+
+### Public T3 connector rollout validation completed
+summary: P9 now has bidirectional public-relay evidence for idle and active delivery, service and T3 restarts, canonical replies, duplicate suppression and cleanup. The provider was synthetic and replies were driver-executed; real model-outage recovery remains unverified.
+
 ## v0.19.0 — 2026-10-23
 
 ### Hermes Telegram companion: exact arrow-title code blocks
