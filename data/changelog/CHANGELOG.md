@@ -19,6 +19,10 @@ or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
 ## v0.19.0 — 2026-10-23
 
+### Hermes Telegram companion: exact arrow-title code blocks
+summary: 2026-10-23: Follow the companion's outgoing body-only pre entity with its exact 19-character U+27A4 language title on every body chunk, no duplicate outgoing arrow row, unchanged incoming blockquote with 17 spaced left arrows, and silent-all-chunks transport; canonical Hermes skill, docs/clients/hermes.md and .collab/runbooks/hermes-distribution.md document ownership, lifecycle and verification (companion baseline 33fc657; selected 19-arrow implementation and client rendering pending).
+clients: hermes
+
 ### Hermes distribution: canonical skill and read-only drift gate
 summary: 2026-10-23: Fold Hermes guidance into data/hermes-plugin/skills/c2c/SKILL.md and run just check-hermes-distribution before shipping; the read-only gate checks all non-bytecode assets with exact newline bytes, while canonical-to-embed/install ownership and the companion's silent-all-chunks Telegram contract are documented in .collab/runbooks/hermes-distribution.md.
 clients: hermes

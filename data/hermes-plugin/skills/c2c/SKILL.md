@@ -181,6 +181,28 @@ second sender in this plugin. Its transport must set
 transport does not mean DATA injection or selective ACK is disabled. Verify
 that companion's installed version/tests before assuming silent delivery.
 
+The selected directional presentation contract follows. The 19-arrow companion
+implementation and Telegram client rendering remain pending, not proven:
+
+- Outgoing: a body-only native `pre` entity whose `language` title is exactly
+  `➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤`
+  (19 U+27A4 characters), preserved on every body-bearing UTF-16 chunk.
+  This title is entity metadata, not literal body/header text: do not add a
+  duplicate outgoing arrow row or use `expandable_blockquote`.
+- Incoming: a regular `blockquote` over the body, with a row of 17 spaced
+  left arrows outside the body entity range. Do not change it to `pre`.
+- Keep bodies literal (subject only to existing host redaction), omit
+  zero-length body entities, and use `parse_mode=None`. Silence applies to
+  every chunk, not just the first; ordinary assistant notifications and
+  non-Telegram surfaces keep their native behavior.
+
+Use supported plugin lifecycle operations for the authorized target only;
+verify its installed source/version, runtime registration and worker binding.
+A copied companion install needs its supported installer refresh before hot
+reload; a symlink follows its source. Do not restart the gateway just to reload
+that companion. Presentation never changes history observation, completion-only
+outbound observation, ambiguity-safe no-retry behavior or selective ACK rules.
+
 To reply to a DM, call:
 
     c2c_send(to="lyra-quill", body="On it, reviewing now.")

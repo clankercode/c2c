@@ -156,13 +156,35 @@ next stream boundary. Long TUI system entries can be expanded to read the
 whole card. Older hosts without a supported display interface retain JSON
 tool results, DATA envelopes and plain slash-command output.
 
-The companion `c2c-telegram-inbound` gateway adapter keeps its separate native
-bold/blockquote entity renderer and `parse_mode=None`, including UTF-16-safe
-chunking. Its matching B378 source loads the semantic envelope and status
-model from this plugin's `message_style.py`; update both pieces together.
+The selected 19-arrow companion implementation and Telegram client rendering
+remain pending, not proven. The title stays native `pre.language` metadata,
+not body text.
+
+The companion `c2c-telegram-inbound` gateway adapter owns its native Telegram
+entities and UTF-16-safe chunking. Outgoing bodies use a body-only `pre` entity
+with `language='➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤'`
+(exactly 19 U+27A4 characters) on every body-bearing chunk. The code-block title
+is metadata, never literal body/header text: no duplicate outgoing arrow row
+and no outgoing `expandable_blockquote`. Incoming bodies retain regular
+`blockquote` entities with a separate row of 17 spaced left arrows outside
+the body ranges. Empty bodies have no zero-length body entity.
+
+Both directions preserve literal bodies (subject only to existing host
+redaction), `parse_mode=None` and `disable_notification=True` on every chunk.
+Ordinary assistant notifications and other surfaces are unchanged. The shared
+semantic envelope and status model remain in this plugin's `message_style.py`;
+verify compatibility when updating either piece.
 Gateway routing and transport remain with that adapter, and the native
 observer does not post additional cards to messaging platforms. The existing
 optional setup canary remains the gateway check described above.
+
+For companion updates, use its supported installer refresh for copy-based
+installs, then supported disable/enable hot reload for the authorized plugin
+only. Verify the intended profile, runtime registration and worker binding;
+do not restart the gateway merely to reload the companion. Its history
+observation, completion-only outbound observation, no-retry semantics and
+selective ACK behavior must remain intact. Source/SDK tests prove submitted
+entities and silent flags, not a human-observed Telegram UI or sound result.
 
 ### Available tools
 

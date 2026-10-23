@@ -1,0 +1,8 @@
+# Selected Hermes Telegram presentation fold-in
+
+- Companion baseline: `33fc65735d0e45cc591fc33778daf438bf07379f`; operator correction selects exactly 19 U+27A4 arrows in native `pre.language`, not body text. Companion implementation and client rendering remain pending, not proven.
+- Canonical skill, public Hermes client docs and distribution runbook now describe the selected title, no duplicate outgoing arrow row, unchanged incoming regular blockquote/17 spaced left arrows, literal UTF-16 chunks, empty-body handling, plain parse mode and silent flags on every chunk. No competing Telegram sender was added.
+- Base `2b09d0b0`: `just check-hermes-distribution` passed (2 tests). After skill edits, the same gate failed as expected with `embedded: stale skills/c2c/SKILL.md`. After `just codegen-hermes-plugin codegen-changelog`, distribution gate (2 tests) and changelog check passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_hermes_message_styling tests.test_hermes_message_native_host tests.test_justfile`: 30 tests, 4 skipped, no failures. `git diff --check` passed. Programmatic checks confirmed all title runs in skill/docs/runbook/embed are exactly 19 U+27A4 and historical changelog content is unchanged.
+- Source and both embedded bundles updated; no runtime Python changed, so no new behavioral test required. Distribution's existing stale-source regression supplies the red/green proof.
+- No push, release, binary build/install, profile activation, gateway restart or protected AGENTS.md edit. Installed-version proof is intentionally not claimed. Real companion SDK/client verification remains owned by the companion lane/coordinator.

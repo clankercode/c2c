@@ -48,8 +48,10 @@ personal profile and does not overwrite an installation or consent settings.
 ## Telegram transport owner
 
 Audited companion source: `c2c-telegram-plugin` commit
-`0f909765945df3ab3aa2fe36a61698de8084cc40` (shared sender silent flag and
-incoming/outgoing SDK-boundary regressions). Its portable handoff is
+`33fc657` is the audited 38-arrow baseline; the operator subsequently selected
+a 19-arrow title, retained as native `pre.language` metadata below. The companion
+19-arrow implementation/commit and Telegram client rendering are pending; do not
+claim the shorter title is already installed or proven visible. Its portable handoff is
 `docs/upstream-silent-cards.md` in that repository. This is a separate
 installation: this c2c embed neither contains nor updates that sender.
 
@@ -65,6 +67,35 @@ cards. Keep `parse_mode=None`, native UTF-16 entities, route/consent checks and
 ACK-retention behavior intact. Verify the actual sender call kwargs in that
 repository's incoming/outgoing multi-chunk tests. A skill statement or this
 repository's source gate cannot establish silent delivery at runtime.
+
+### Directional presentation contract
+
+- Outgoing body-only native `pre`, with the exact companion title
+  `language='➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤'`
+  (19 U+27A4 characters), on every body-bearing UTF-16 chunk. Copy this value
+  verbatim; the title is entity metadata, never body/header text. Remove the
+  obsolete outgoing separator row and `expandable_blockquote` recommendation.
+- Incoming regular `blockquote` remains unchanged, with 17 spaced left arrows
+  outside body entity ranges. Never include presentation arrows in peer bodies.
+- Preserve literal bodies subject only to existing host redaction, omit
+  zero-length body entities, and keep `parse_mode=None` and explicit
+  `disable_notification=True` for every chunk in both directions.
+- Validate formatter regressions and real `MessageEntity` SDK-boundary tests,
+  including serialized `language` metadata. Mocks prove kwargs, not client UI
+  or sound. Keep history observation, completion-only outbound observation,
+  ambiguity-safe no-retry semantics, route/consent checks and ACK retention.
+- Keep general-audience ownership comments near companion entrypoint,
+  transport and observer; use supported profile APIs/configuration, never local
+  chat IDs, profile restrictions, identities, paths or grants. Do not introduce
+  a global notification toggle or change non-Telegram presentation.
+- Refresh a copied companion through its supported installer, then use
+  supported disable/enable hot reload on only the authorized target. A symlink
+  follows its checked-out source. Read back intended-profile configuration,
+  runtime registration and worker binding; never restart the gateway just to
+  reload this plugin. This documentation fold-in does not activate an install.
+
+Record standalone and upstream commit IDs, test receipts, generated-artifact
+status and installed-version proof (or explicitly not installed) in the handoff.
 
 When changing this integration, coordinate companion ownership, validate its
 transport tests, and fold relevant operational guidance into the canonical
