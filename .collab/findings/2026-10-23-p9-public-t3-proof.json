@@ -1,0 +1,799 @@
+{
+  "schema": "c2c-p9-public-t3-proof-v1",
+  "status": "PASS",
+  "runId": "19ba9f809e3149f7b14d2380",
+  "publicUrl": "https://relay.c2c.im",
+  "source": {
+    "commit": "b8c42376ea8363891f7b2249e4056d7ebf4b53c8",
+    "tree": "e7750255ed766aeb7b61a015c4c0c3576333642d"
+  },
+  "rolloutCommit": "80c7f35a42cbdd90164acbbd8bdad9f8a7840069",
+  "cases": [
+    {
+      "from": "x-p35",
+      "to": "x-tuf",
+      "label": "idle",
+      "send": {
+        "messageId": "2944261d-895f-4c4b-85a8-0ffa91358b17",
+        "nonceSha256": "ef7db1ddc039a81fa099c6db4c682e0ba00d9f869bac52d3d7a20333c20e41ba",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "idle",
+        "nonceSha256": "ef7db1ddc039a81fa099c6db4c682e0ba00d9f869bac52d3d7a20333c20e41ba",
+        "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-a333c6db65cc8e4f75c452dbf2447817",
+        "runId": "run:thread:mcp%3Aa54bf51a-ce74-443a-8c09-8a0be171a53c:ordinal:1",
+        "delivery": "started",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/start",
+          "threadId": "46e6a0d4-1286-4d13-9281-aaa6f985c487",
+          "timestamp": 1792719451279
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "2944261d-895f-4c4b-85a8-0ffa91358b17",
+        "relayMessageId": "2944261d-895f-4c4b-85a8-0ffa91358b17",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "ef3354c4f31ed9f43fbebc042db98bd1bedf2f365e6ac496a5c040e59b5b643f",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "2b4528e2-fd78-44cb-9f62-380b92bb0408"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "2b4528e2-fd78-44cb-9f62-380b92bb0408",
+        "relayMessageId": "2b4528e2-fd78-44cb-9f62-380b92bb0408",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-p35",
+      "to": "x-tuf",
+      "label": "active",
+      "send": {
+        "messageId": "599e3cc3-f844-4a24-bdb9-c2b3542139b3",
+        "nonceSha256": "f37eb0f6a55ff96a7a91bc66552ec3ada274394f2a149f52a5ad715f732525ce",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "hold",
+        "nonceSha256": "f37eb0f6a55ff96a7a91bc66552ec3ada274394f2a149f52a5ad715f732525ce",
+        "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-ab06106eb45b68654159c46f997f2373",
+        "runId": "run:thread:mcp%3A59b50352-25e6-44eb-9c0a-8afb081f307a:ordinal:1",
+        "delivery": "steered",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/steer",
+          "threadId": "fbbf3e8c-c829-4907-a826-b14c3ae63c21",
+          "timestamp": 1792719478022
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "599e3cc3-f844-4a24-bdb9-c2b3542139b3",
+        "relayMessageId": "599e3cc3-f844-4a24-bdb9-c2b3542139b3",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "8474eb450949b0b45c824a24bf8acda5c6b7c9a105dcff9607a0531b217d1be9",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "c36585eb-2562-4824-acb0-922aa1a61e15"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "c36585eb-2562-4824-acb0-922aa1a61e15",
+        "relayMessageId": "c36585eb-2562-4824-acb0-922aa1a61e15",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-tuf",
+      "to": "x-p35",
+      "label": "idle",
+      "send": {
+        "messageId": "303c4b8b-8449-4be7-b311-403408a5a268",
+        "nonceSha256": "69f2cd87800d533ed59ce54741b75d5507d5ba0e848c96450e5e4d38a748e727",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "idle",
+        "nonceSha256": "69f2cd87800d533ed59ce54741b75d5507d5ba0e848c96450e5e4d38a748e727",
+        "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-f16408e9be7bf4c51d778edfb784cda3",
+        "runId": "run:thread:mcp%3A91457c1b-9719-45a6-accc-cb0fbc616d40:ordinal:1",
+        "delivery": "started",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/start",
+          "threadId": "6368f628-20ae-45bc-8d90-fad79d960bd9",
+          "timestamp": 1792719501513
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "303c4b8b-8449-4be7-b311-403408a5a268",
+        "relayMessageId": "303c4b8b-8449-4be7-b311-403408a5a268",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "dd22d3a108d910a8c48a51b6dad9f30e644edb3b5a357e4dda0538b41ba9c7ae",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "3c154600-6218-4649-81d2-b963ce5472e6"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "3c154600-6218-4649-81d2-b963ce5472e6",
+        "relayMessageId": "3c154600-6218-4649-81d2-b963ce5472e6",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-tuf",
+      "to": "x-p35",
+      "label": "active",
+      "send": {
+        "messageId": "3d391416-fc32-4b71-acb3-b43145cb660f",
+        "nonceSha256": "58d59b9e900d667ed5cf59d625a4b4d4ea07d6e38661b25755e41a1e2c51cb8b",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "hold",
+        "nonceSha256": "58d59b9e900d667ed5cf59d625a4b4d4ea07d6e38661b25755e41a1e2c51cb8b",
+        "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-e62aac2ad5b75285cf2901af9c79b127",
+        "runId": "run:thread:mcp%3A48567f8d-c8e7-4201-987f-2507cb683c52:ordinal:1",
+        "delivery": "steered",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/steer",
+          "threadId": "1f5b1414-a8d3-4408-bcf1-e22bb1e404a6",
+          "timestamp": 1792719527990
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "3d391416-fc32-4b71-acb3-b43145cb660f",
+        "relayMessageId": "3d391416-fc32-4b71-acb3-b43145cb660f",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "2f109a1022787ed02a95dfd26261a486bc470bd8ad123be3a01d70d069bd6592",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "e81a2132-f2f4-41b2-87da-bedf6d3fb464"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "e81a2132-f2f4-41b2-87da-bedf6d3fb464",
+        "relayMessageId": "e81a2132-f2f4-41b2-87da-bedf6d3fb464",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-p35",
+      "to": "x-tuf",
+      "label": "after_service_restart",
+      "send": {
+        "messageId": "918fb447-6dcb-40e8-b33d-e0b809517efb",
+        "nonceSha256": "fbeb6e94f480faa35417b40720050ca9520afffbcdda6da29ef4d84fa00fb361",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "idle",
+        "nonceSha256": "fbeb6e94f480faa35417b40720050ca9520afffbcdda6da29ef4d84fa00fb361",
+        "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-745195d7445e8ea3cf81c9f08bbdc1b1",
+        "runId": "run:thread:mcp%3Aa54bf51a-ce74-443a-8c09-8a0be171a53c:ordinal:2",
+        "delivery": "started",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/start",
+          "threadId": "46e6a0d4-1286-4d13-9281-aaa6f985c487",
+          "timestamp": 1792719564416
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "918fb447-6dcb-40e8-b33d-e0b809517efb",
+        "relayMessageId": "918fb447-6dcb-40e8-b33d-e0b809517efb",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "fde21fb30914a489d49542c34bd179ab1abddaa3c0a8d30f5cbb9b2901ea16da",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "d759a210-180c-4d8c-ba44-f01cf6132140"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "d759a210-180c-4d8c-ba44-f01cf6132140",
+        "relayMessageId": "d759a210-180c-4d8c-ba44-f01cf6132140",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-tuf",
+      "to": "x-p35",
+      "label": "after_service_restart",
+      "send": {
+        "messageId": "ef3d4544-ffe7-40b0-9e16-12b3551c0e3c",
+        "nonceSha256": "3608d830cc0bf9c746ed251ffe3a72a006260089a502b9eeef0e5dbfb2df77d3",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "idle",
+        "nonceSha256": "3608d830cc0bf9c746ed251ffe3a72a006260089a502b9eeef0e5dbfb2df77d3",
+        "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-c1ee668b915b71ebe841c40a245fbeef",
+        "runId": "run:thread:mcp%3A91457c1b-9719-45a6-accc-cb0fbc616d40:ordinal:2",
+        "delivery": "started",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/start",
+          "threadId": "6368f628-20ae-45bc-8d90-fad79d960bd9",
+          "timestamp": 1792719588773
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "ef3d4544-ffe7-40b0-9e16-12b3551c0e3c",
+        "relayMessageId": "ef3d4544-ffe7-40b0-9e16-12b3551c0e3c",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "c4e5959f563987cf26f35e2c4026e4ee7b35f82316db04c499131daae2d481e5",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "12085831-efcd-4190-a439-ed0164cd69f1"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "12085831-efcd-4190-a439-ed0164cd69f1",
+        "relayMessageId": "12085831-efcd-4190-a439-ed0164cd69f1",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-p35",
+      "to": "x-tuf",
+      "label": "after_t3_restart",
+      "send": {
+        "messageId": "f65e8b58-7fc5-435e-8c47-c6c51cee4be6",
+        "nonceSha256": "8581f914116e0c73e0410f28b4677005a6c2810fbcb0a2e7b07b134a54fc9760",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "idle",
+        "nonceSha256": "8581f914116e0c73e0410f28b4677005a6c2810fbcb0a2e7b07b134a54fc9760",
+        "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-67c2301b26ee4389d991f640c88aadd9",
+        "runId": "run:thread:mcp%3Aa54bf51a-ce74-443a-8c09-8a0be171a53c:ordinal:3",
+        "delivery": "started",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/start",
+          "threadId": "46e6a0d4-1286-4d13-9281-aaa6f985c487",
+          "timestamp": 1792719635018
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "f65e8b58-7fc5-435e-8c47-c6c51cee4be6",
+        "relayMessageId": "f65e8b58-7fc5-435e-8c47-c6c51cee4be6",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "6ddb2635afc5fc8f5f51b105a070e79241c3902c6609c117417d3ead6ab5f23d",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "3e2ec653-dd05-4921-a111-0e6157ac730c"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "3e2ec653-dd05-4921-a111-0e6157ac730c",
+        "relayMessageId": "3e2ec653-dd05-4921-a111-0e6157ac730c",
+        "relayResult": "duplicate"
+      }
+    },
+    {
+      "from": "x-tuf",
+      "to": "x-p35",
+      "label": "after_t3_restart",
+      "send": {
+        "messageId": "1b1539d4-bccb-4b76-84a6-92cf9d75da2d",
+        "nonceSha256": "ffafd3698c89721c075a8732540b0c37214e6801914a0e2fe0cea8dab020705a",
+        "canonicalRecipe": false
+      },
+      "delivery": {
+        "case": "idle",
+        "nonceSha256": "ffafd3698c89721c075a8732540b0c37214e6801914a0e2fe0cea8dab020705a",
+        "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-5d7178914e478b47b864314bccb455c3",
+        "runId": "run:thread:mcp%3A91457c1b-9719-45a6-accc-cb0fbc616d40:ordinal:3",
+        "delivery": "started",
+        "deliveryEvidence": "native run identity plus provider method",
+        "createdBy": "agent",
+        "creationSource": "mcp",
+        "canonicalRemoteFooter": true,
+        "provider": {
+          "method": "turn/start",
+          "threadId": "6368f628-20ae-45bc-8d90-fad79d960bd9",
+          "timestamp": 1792719658228
+        },
+        "duplicates": 0
+      },
+      "duplicate": {
+        "duplicate": true,
+        "messageId": "1b1539d4-bccb-4b76-84a6-92cf9d75da2d",
+        "relayMessageId": "1b1539d4-bccb-4b76-84a6-92cf9d75da2d",
+        "relayResult": "duplicate"
+      },
+      "reply": {
+        "nonceSha256": "f7d5f7f9b846f302dc65601f8fd69e209e6a43fbb833eb8ec7a670ce681de078",
+        "canonicalSender": true,
+        "oneDelivery": true,
+        "messageId": "a03db8a2-eb7a-49a3-b97e-b93c87e86747"
+      },
+      "replyDuplicate": {
+        "duplicate": true,
+        "messageId": "a03db8a2-eb7a-49a3-b97e-b93c87e86747",
+        "relayMessageId": "a03db8a2-eb7a-49a3-b97e-b93c87e86747",
+        "relayResult": "duplicate"
+      }
+    }
+  ],
+  "cleanup": {
+    "x-p35": {
+      "cleaned": true,
+      "publicWithdrawn": true,
+      "ownedFixtureStopped": true,
+      "privateRootRemoved": true,
+      "relayLeaseDeleted": false,
+      "relayRetention": "lease TTL at least 24h; alias reservation up to 360d; storage not purged; no owner unregister API"
+    },
+    "x-tuf": {
+      "cleaned": true,
+      "publicWithdrawn": true,
+      "ownedFixtureStopped": true,
+      "privateRootRemoved": true,
+      "relayLeaseDeleted": false,
+      "relayRetention": "lease TTL at least 24h; alias reservation up to 360d; storage not purged; no owner unregister API"
+    }
+  },
+  "syntheticProvider": true,
+  "realModelOutageTested": false,
+  "canonicalReplyExecution": "fixture operator through independent owned sender binding",
+  "closesT003": false,
+  "priorEvidence": {
+    "x-p35": {
+      "manifestSha256": "74fb49d19b65b13252960a4d410a10a6bbb80cfbb2dfdb646afc738b6bd0bbd7",
+      "installedReceiptSha256": "0e1a4449909004ccaffe2590817381ac0ed72c0d999f60657b3eb490bfb3c5c8",
+      "proofReferences": [
+        {
+          "kind": "native-service",
+          "path": "/home/xertrov/.cache/c2c/p9/b8c42376-x-p35-native-service-proof.json",
+          "sha256": "f40da7f12cdaacc2561dbf59a6e3fe8773a3da56f4feb0897d8dafb392bdb76c",
+          "historicalOnly": true
+        },
+        {
+          "kind": "dispatcher-fault",
+          "path": "/home/xertrov/.cache/c2c/p9/b8c42376-x-p35-dispatcher-fault-proof.json",
+          "sha256": "27c6de3563a1e3a487d6f2bea34013d5ef06ca482628886bd46086326d8536be",
+          "historicalOnly": true
+        },
+        {
+          "kind": "restart-direct",
+          "path": "/home/xertrov/.cache/c2c/p9/b8c42376-x-p35-restart-direct-proof.json",
+          "sha256": "43c00bbb84e91b6cbecadb1562b61a1ecc575b961340156580868ccbff910d8e",
+          "historicalOnly": true
+        }
+      ]
+    },
+    "x-tuf": {
+      "manifestSha256": "6d41049eb323c48e1559d1432f1651b91029e4f044401a0af3766d89ee515c82",
+      "installedReceiptSha256": "3088f6876f8e03214f36ba6340efeaa9e76d2c7b054008ec3e1a4c1adba09846",
+      "proofReferences": [
+        {
+          "kind": "native-service",
+          "path": "/home/xertrov/.cache/c2c/p9/b8c42376-x-tuf-native-service-proof.json",
+          "sha256": "795337d24e2e374e77cbc0d5636eac56c8bcce17600075ddeeefaf333c64b7df",
+          "historicalOnly": true
+        },
+        {
+          "kind": "dispatcher-fault",
+          "path": "/home/xertrov/.cache/c2c/p9/b8c42376-x-tuf-dispatcher-fault-proof.json",
+          "sha256": "409a152aff9ee62aff92e9ba0db71c14b4d97c4e5680b9c694d04e2c1068de68",
+          "historicalOnly": true
+        },
+        {
+          "kind": "restart-direct",
+          "path": "/home/xertrov/.cache/c2c/p9/b8c42376-x-tuf-restart-direct-proof.json",
+          "sha256": "b640608605d7aaf6f8c28486f3c6e9873453a8edeb4c3dd4a74a3d4749248d00",
+          "historicalOnly": true
+        }
+      ]
+    }
+  },
+  "drivers": {
+    "coordinatorSha256": "74542a1a6adba25aa4893eaa0c120226efb80fe63ebf8e665ce24e0268f78361",
+    "actorSha256": "5f14890a7ddd67f665654d81a573977dfcb5ed0b1770e269a0346e1a0bd09f01"
+  },
+  "preflight": {
+    "x-p35": {
+      "host": "x-p35",
+      "source": {
+        "commit": "b8c42376ea8363891f7b2249e4056d7ebf4b53c8",
+        "tree": "e7750255ed766aeb7b61a015c4c0c3576333642d"
+      },
+      "manifestSha256": "74fb49d19b65b13252960a4d410a10a6bbb80cfbb2dfdb646afc738b6bd0bbd7",
+      "artifactSha256": {
+        "c2c": "ee4cfc9a19deb9f3757fa412d8ba5824f0731784dd80be28856b0ee0f6a5a553",
+        "c2c-deliver-inbox": "0622f1f1625cd6db45d1319d68d4f98c62e5bd9156ef8b3879b9d312a0b1c91a",
+        "c2c-mcp-server": "634d1b9d8d2cf027ad9b9d755a09b5f8b315c0a43d98f451b84d7135b2f114a4",
+        "c2c-mcp-inner": "f82e7ba4baed589b62449b7612cb25cd73d573d1c4a983cc1e15957dd10e14bc",
+        "c2c-inbox-hook-ocaml": "397315b6394d5bc25ddef2b8fb9437cd07c87f20208ca54194c5be91bd6c019f",
+        "c2c-stop-hook-ocaml": "af2bbd55d506497b24afca5c5d764f7871790d8602505f30dbe4b489c2a334de",
+        "c2c-cold-boot-hook": "349b7e5988c11a83d24e77e003774675be2bffea728087092669a9d0c1acd490",
+        "c2c-post-compact-hook": "5b76cf55553f0c7c61b47ba63bac0a413fb87de85f478ba1648c220508e3a276"
+      },
+      "t3Sha256": "8b3a80da959dc865d7cfc142e534160ad5d2e31589155dbb4457b7286aadb02c",
+      "toolchainSha256": "bf4347ef551782a649893ddbb6618475e413366aaff2c8b960325d63c7b1e72e",
+      "dependenciesSha256": "36d3744315013bc4362df4148c66cafc599d873a57ed44f1973759ec28e91b68",
+      "health": {
+        "gitHash": "80c7f35",
+        "authMode": "prod",
+        "protocolVersion": 1,
+        "contactDestinationBinding": 1
+      }
+    },
+    "x-tuf": {
+      "host": "x-tuf",
+      "source": {
+        "commit": "b8c42376ea8363891f7b2249e4056d7ebf4b53c8",
+        "tree": "e7750255ed766aeb7b61a015c4c0c3576333642d"
+      },
+      "manifestSha256": "6d41049eb323c48e1559d1432f1651b91029e4f044401a0af3766d89ee515c82",
+      "artifactSha256": {
+        "c2c": "fa4f7a728fc38c9fe430eb00a6b89d23935f2be0bebf9a10bc949311def13b91",
+        "c2c-deliver-inbox": "b97c4c8defc9eac29bc0ff1fd8e4e435e76240153d2c7a01910cf8c4babb3082",
+        "c2c-mcp-server": "d44088f5f91f781ab417de00aca22a81d1eb285e2102200fcb2eb7fd47f2751f",
+        "c2c-mcp-inner": "715cede5d12c40e43417f446b13ef266c4699ab7a912eb36713b366cfae8df6e",
+        "c2c-inbox-hook-ocaml": "eaf2374810849a603fce6970f16529f36e01be39bfad643f3ec467d41e4b87e6",
+        "c2c-stop-hook-ocaml": "dabbdcc1ea860bc44c6b17ef2cbe3056f876684587e321473948a8df75e0d743",
+        "c2c-cold-boot-hook": "1aadc8f28da73e3063de063e59196c0ff5e1221ac7032df9b9a5f8f7a6df36bc",
+        "c2c-post-compact-hook": "299c0f2e49e63b0905d65f5d5793a7ac1c91425a766e5b981a997c05f504b8d3"
+      },
+      "t3Sha256": "8b3a80da959dc865d7cfc142e534160ad5d2e31589155dbb4457b7286aadb02c",
+      "toolchainSha256": "4dff51fbcadff28b284658aef4855ce0a6af54db0d5f53bd90c77ca601d332ab",
+      "dependenciesSha256": "6ec73a5c6dc69d26c9077579cf47d4ce4b60c03140bd170be30832504686d4c5",
+      "health": {
+        "gitHash": "80c7f35",
+        "authMode": "prod",
+        "protocolVersion": 1,
+        "contactDestinationBinding": 1
+      }
+    }
+  },
+  "enrollment": {
+    "x-p35": {
+      "host": "x-p35",
+      "hostId": "0461f1a9dd57",
+      "senderAlias": "p9pub-x-p35-19ba9f809e3149f7b14d2380",
+      "senderRoute": "p9pub-x-p35-19ba9f809e3149f7b14d2380@0461f1a9dd57",
+      "targets": {
+        "idle": {
+          "alias": "t3-e8249c52d4402acbab592453863a5c0e",
+          "route": "t3-e8249c52d4402acbab592453863a5c0e@0461f1a9dd57",
+          "threadId": "mcp:91457c1b-9719-45a6-accc-cb0fbc616d40"
+        },
+        "hold": {
+          "alias": "t3-9cab48f63f83d8c83ad89c7101f4115d",
+          "route": "t3-9cab48f63f83d8c83ad89c7101f4115d@0461f1a9dd57",
+          "threadId": "mcp:48567f8d-c8e7-4201-987f-2507cb683c52"
+        }
+      },
+      "runningService": {
+        "pid": 461553,
+        "startTicks": "76278931",
+        "executableSha256": "ee4cfc9a19deb9f3757fa412d8ba5824f0731784dd80be28856b0ee0f6a5a553"
+      }
+    },
+    "x-tuf": {
+      "host": "x-tuf",
+      "hostId": "7014963b6267",
+      "senderAlias": "p9pub-x-tuf-19ba9f809e3149f7b14d2380",
+      "senderRoute": "p9pub-x-tuf-19ba9f809e3149f7b14d2380@7014963b6267",
+      "targets": {
+        "idle": {
+          "alias": "t3-868a2cfc59308e315be44e3475ea5981",
+          "route": "t3-868a2cfc59308e315be44e3475ea5981@7014963b6267",
+          "threadId": "mcp:a54bf51a-ce74-443a-8c09-8a0be171a53c"
+        },
+        "hold": {
+          "alias": "t3-3da023387c4b0143942c7a01a477da54",
+          "route": "t3-3da023387c4b0143942c7a01a477da54@7014963b6267",
+          "threadId": "mcp:59b50352-25e6-44eb-9c0a-8afb081f307a"
+        }
+      },
+      "runningService": {
+        "pid": 4191857,
+        "startTicks": "76280951",
+        "executableSha256": "fa4f7a728fc38c9fe430eb00a6b89d23935f2be0bebf9a10bc949311def13b91"
+      }
+    }
+  },
+  "restarts": {
+    "service": {
+      "x-p35": {
+        "kind": "service",
+        "aliasStable": true,
+        "credentialGenerationStable": true,
+        "runningService": {
+          "pid": 462390,
+          "startTicks": "76291274",
+          "executableSha256": "ee4cfc9a19deb9f3757fa412d8ba5824f0731784dd80be28856b0ee0f6a5a553"
+        }
+      },
+      "x-tuf": {
+        "kind": "service",
+        "aliasStable": true,
+        "credentialGenerationStable": true,
+        "runningService": {
+          "pid": 4192679,
+          "startTicks": "76291849",
+          "executableSha256": "fa4f7a728fc38c9fe430eb00a6b89d23935f2be0bebf9a10bc949311def13b91"
+        }
+      }
+    },
+    "t3": {
+      "x-p35": {
+        "kind": "t3",
+        "aliasStable": true,
+        "credentialGenerationStable": true,
+        "runningService": {
+          "pid": 462390,
+          "startTicks": "76291274",
+          "executableSha256": "ee4cfc9a19deb9f3757fa412d8ba5824f0731784dd80be28856b0ee0f6a5a553"
+        }
+      },
+      "x-tuf": {
+        "kind": "t3",
+        "aliasStable": true,
+        "credentialGenerationStable": true,
+        "runningService": {
+          "pid": 4192679,
+          "startTicks": "76291849",
+          "executableSha256": "fa4f7a728fc38c9fe430eb00a6b89d23935f2be0bebf9a10bc949311def13b91"
+        }
+      }
+    }
+  },
+  "finalAudit": {
+    "x-p35": {
+      "host": "x-p35",
+      "proofs": [
+        {
+          "case": "idle",
+          "nonceSha256": "69f2cd87800d533ed59ce54741b75d5507d5ba0e848c96450e5e4d38a748e727",
+          "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-f16408e9be7bf4c51d778edfb784cda3",
+          "runId": "run:thread:mcp%3A91457c1b-9719-45a6-accc-cb0fbc616d40:ordinal:1",
+          "delivery": "started",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/start",
+            "threadId": "6368f628-20ae-45bc-8d90-fad79d960bd9",
+            "timestamp": 1792719501513
+          },
+          "duplicates": 0
+        },
+        {
+          "case": "hold",
+          "nonceSha256": "58d59b9e900d667ed5cf59d625a4b4d4ea07d6e38661b25755e41a1e2c51cb8b",
+          "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-e62aac2ad5b75285cf2901af9c79b127",
+          "runId": "run:thread:mcp%3A48567f8d-c8e7-4201-987f-2507cb683c52:ordinal:1",
+          "delivery": "steered",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/steer",
+            "threadId": "1f5b1414-a8d3-4408-bcf1-e22bb1e404a6",
+            "timestamp": 1792719527990
+          },
+          "duplicates": 0
+        },
+        {
+          "case": "idle",
+          "nonceSha256": "3608d830cc0bf9c746ed251ffe3a72a006260089a502b9eeef0e5dbfb2df77d3",
+          "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-c1ee668b915b71ebe841c40a245fbeef",
+          "runId": "run:thread:mcp%3A91457c1b-9719-45a6-accc-cb0fbc616d40:ordinal:2",
+          "delivery": "started",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/start",
+            "threadId": "6368f628-20ae-45bc-8d90-fad79d960bd9",
+            "timestamp": 1792719588773
+          },
+          "duplicates": 0
+        },
+        {
+          "case": "idle",
+          "nonceSha256": "ffafd3698c89721c075a8732540b0c37214e6801914a0e2fe0cea8dab020705a",
+          "messageId": "message:mcp:client%3Abf23cac9-6ea1-442d-87d5-62715d0083cb:thread-send:c2c-t3-5d7178914e478b47b864314bccb455c3",
+          "runId": "run:thread:mcp%3A91457c1b-9719-45a6-accc-cb0fbc616d40:ordinal:3",
+          "delivery": "started",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/start",
+            "threadId": "6368f628-20ae-45bc-8d90-fad79d960bd9",
+            "timestamp": 1792719658228
+          },
+          "duplicates": 0
+        }
+      ],
+      "canonicalReplyCount": 4,
+      "serviceRestarts": 1,
+      "t3Restarts": 1,
+      "foreignServicesUnchanged": true,
+      "sourceAndInstalledStable": true,
+      "publicHealth": {
+        "gitHash": "80c7f35",
+        "authMode": "prod",
+        "protocolVersion": 1,
+        "contactDestinationBinding": 1
+      },
+      "runningService": {
+        "pid": 462390,
+        "startTicks": "76291274",
+        "executableSha256": "ee4cfc9a19deb9f3757fa412d8ba5824f0731784dd80be28856b0ee0f6a5a553"
+      },
+      "projectionAudit": {
+        "ownedTargets": 2,
+        "ownedNonces": 16,
+        "complete": true,
+        "queuesEmpty": true
+      },
+      "realModelOutageTested": false,
+      "syntheticProvider": true,
+      "intervalOverrideSeconds": 2
+    },
+    "x-tuf": {
+      "host": "x-tuf",
+      "proofs": [
+        {
+          "case": "idle",
+          "nonceSha256": "ef7db1ddc039a81fa099c6db4c682e0ba00d9f869bac52d3d7a20333c20e41ba",
+          "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-a333c6db65cc8e4f75c452dbf2447817",
+          "runId": "run:thread:mcp%3Aa54bf51a-ce74-443a-8c09-8a0be171a53c:ordinal:1",
+          "delivery": "started",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/start",
+            "threadId": "46e6a0d4-1286-4d13-9281-aaa6f985c487",
+            "timestamp": 1792719451279
+          },
+          "duplicates": 0
+        },
+        {
+          "case": "hold",
+          "nonceSha256": "f37eb0f6a55ff96a7a91bc66552ec3ada274394f2a149f52a5ad715f732525ce",
+          "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-ab06106eb45b68654159c46f997f2373",
+          "runId": "run:thread:mcp%3A59b50352-25e6-44eb-9c0a-8afb081f307a:ordinal:1",
+          "delivery": "steered",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/steer",
+            "threadId": "fbbf3e8c-c829-4907-a826-b14c3ae63c21",
+            "timestamp": 1792719478022
+          },
+          "duplicates": 0
+        },
+        {
+          "case": "idle",
+          "nonceSha256": "fbeb6e94f480faa35417b40720050ca9520afffbcdda6da29ef4d84fa00fb361",
+          "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-745195d7445e8ea3cf81c9f08bbdc1b1",
+          "runId": "run:thread:mcp%3Aa54bf51a-ce74-443a-8c09-8a0be171a53c:ordinal:2",
+          "delivery": "started",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/start",
+            "threadId": "46e6a0d4-1286-4d13-9281-aaa6f985c487",
+            "timestamp": 1792719564416
+          },
+          "duplicates": 0
+        },
+        {
+          "case": "idle",
+          "nonceSha256": "8581f914116e0c73e0410f28b4677005a6c2810fbcb0a2e7b07b134a54fc9760",
+          "messageId": "message:mcp:client%3Ab7088bb6-4a6d-42fa-bec5-7879dc9cb56a:thread-send:c2c-t3-67c2301b26ee4389d991f640c88aadd9",
+          "runId": "run:thread:mcp%3Aa54bf51a-ce74-443a-8c09-8a0be171a53c:ordinal:3",
+          "delivery": "started",
+          "deliveryEvidence": "native run identity plus provider method",
+          "createdBy": "agent",
+          "creationSource": "mcp",
+          "canonicalRemoteFooter": true,
+          "provider": {
+            "method": "turn/start",
+            "threadId": "46e6a0d4-1286-4d13-9281-aaa6f985c487",
+            "timestamp": 1792719635018
+          },
+          "duplicates": 0
+        }
+      ],
+      "canonicalReplyCount": 4,
+      "serviceRestarts": 1,
+      "t3Restarts": 1,
+      "foreignServicesUnchanged": true,
+      "sourceAndInstalledStable": true,
+      "publicHealth": {
+        "gitHash": "80c7f35",
+        "authMode": "prod",
+        "protocolVersion": 1,
+        "contactDestinationBinding": 1
+      },
+      "runningService": {
+        "pid": 4192679,
+        "startTicks": "76291849",
+        "executableSha256": "fa4f7a728fc38c9fe430eb00a6b89d23935f2be0bebf9a10bc949311def13b91"
+      },
+      "projectionAudit": {
+        "ownedTargets": 2,
+        "ownedNonces": 16,
+        "complete": true,
+        "queuesEmpty": true
+      },
+      "realModelOutageTested": false,
+      "syntheticProvider": true,
+      "intervalOverrideSeconds": 2
+    }
+  },
+  "cleanupCompleted": true,
+  "finishedAt": "2026-10-23T01:41:35Z"
+}

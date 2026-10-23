@@ -136,3 +136,11 @@ documented explicit public-URL command. Source review does not close T003.
 B369/B370 are closed after their reviewed, merged implementation, required
 build/install gates, actual two-host proof and independent NAS canary passed.
 Hermes gateway delivery/wake remains separately scoped.
+
+## Public gate resolved 2026-10-23
+
+The earlier blocked/prepared status above is historical. The deployed descendant
+`80c7f35a` passed the actual public two-host T3 proof with the exact b8 installed
+binaries on both hosts: eight delivery/reply legs, idle/active/restarts, duplicate
+audits and successful owned cleanup. See the [final public closeout](2026-10-23-p9-public-closeout.md)
+and its linked original metadata receipt for evidence and unchanged limitations.
