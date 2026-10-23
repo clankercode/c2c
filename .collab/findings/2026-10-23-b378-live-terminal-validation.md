@@ -193,3 +193,73 @@ Coverage limits: no model-visible injection, idle wake, active model-stream
 boundary, live MCP server, Telegram transport/UI, or non-TTY Hermes application
 run is claimed. The reopened TUI/CLI application-paint requirement passes;
 those other surfaces retain their earlier test evidence and stated limits.
+
+## Supplemental verifier correction — review r1
+
+The P2 review correctly identified a verifier false positive: the incoming
+capture also contains the complete, expanded outgoing card. Searching that
+whole buffer could borrow the outgoing markup, Unicode, `LONG-END` and closing
+marker even when the incoming card was truncated. The original captures
+actually contain both complete cards, so this does not invalidate the live
+runtime evidence above.
+
+The new verifier isolates each expanded card from its actual header to the
+next application entry/card boundary. It requires that card's own closing
+marker as its last content, its own trailing body lines, and its own body
+identity, literal markup, Unicode and `LONG-END`. Queue metadata and DATA/ANSI
+checks also operate inside their respective card's metadata/body. Earlier or
+later transcript entries cannot supply the missing content.
+
+This is a **fixture-only supplemental readback on x-p35**, not a new Hermes
+run. The original archive, captures, `verdict.json` and `proof-script.sha256`
+remain historical and unchanged. In particular:
+
+- Original script at commit `8da4f54c932735ac8594565fce1c869e05950e57`:
+  SHA-256 `1687e3a647bd3a1343921d18654e262a546c9d1f7f0d26f1b527c56c96f7c0fa`.
+- Supplemental verifier script:
+  SHA-256 `24535693caa4e5ca2764d7ad024a1b5e54eb77b12d130283bca470630c487fd6`.
+- Historical archive SHA-256 on x-p35 is still
+  `aef5ac2b4d0dad6a2a6c308608ea652e60fddffbf7cdbb9e806919c10f528695`.
+- New report on x-p35:
+  `/tmp/c2c-b378-verifier-r1-20261023-ivy/readback-final.json`.
+  Local readback copy:
+  `/tmp/c2c-b378-verifier-r1-20261023-ivy-readback-final.json`.
+  Report SHA-256:
+  `7021b6e52fbd86846d3facfe6e1340f48b10f2d84206bdfec35120d25a792a6a`.
+
+The report records each input capture hash, each isolated card hash, both
+verifier identities, the host, each negative fixture's paths/hashes and the
+specific rejection reason. The generated counterexample files are retained
+beside it under `readback-final.fixtures/` on x-p35. They are separate from the
+archived live evidence.
+
+For the legacy comparison, the script verifies the historical script's hash
+against the archived run identity, then compiles only its exact paint
+assertions from the AST. It does not execute any old launch/provisioning code.
+For **each** TUI and CLI capture, it checks:
+
+1. The unmodified archived outgoing and incoming cards pass the fixed verifier.
+2. Incoming capture truncated before its own `LONG-END`, keeping the complete
+   outgoing card: **historical ACCEPTED; fixed REJECTED**.
+3. Only incoming `LONG-END` replaced, keeping its closing marker and the full
+   outgoing card: **historical ACCEPTED; fixed REJECTED**.
+4. Only incoming closing marker replaced, keeping its `LONG-END` and the full
+   outgoing card: **historical ACCEPTED; fixed REJECTED**.
+5. Outgoing closing marker replaced while a complete incoming card follows:
+   **historical ACCEPTED; fixed REJECTED**.
+
+Exact final command, after copying the scripts/historical source and unpacking
+the unchanged archive into the owned temporary directory on x-p35:
+
+```bash
+ssh -o BatchMode=yes x-p35 'python3 /tmp/c2c-b378-verifier-r1-20261023-ivy/scripts/hermes-b378-live-proof.py --output /tmp/c2c-b378-verifier-r1-20261023-ivy/archived --legacy-script /tmp/c2c-b378-verifier-r1-20261023-ivy/hermes-b378-live-proof-historical-8da4f54c.py --verification-output /tmp/c2c-b378-verifier-r1-20261023-ivy/readback-final.json verify'
+```
+
+Exit **0**:
+
+```text
+PASS: 2 archived surface readbacks; 8 historical-accept/fixed-reject counterexamples
+```
+
+No test execution occurred on xsm, no new app session was launched, and no
+product source, backlog, parent gate or historical run identity was changed.

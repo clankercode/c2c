@@ -15,11 +15,17 @@ captured as plain text and ANSI, and owned processes are stopped in finally.
 This verifies explicit poll/selected ACK and terminal paint, not model ingestion
 or idle wake. The existing Hermes committed interpreter and prebuilt TUI must
 already be present; automatic dependency preparation is disabled.
+
+Fixture-only review (does not launch applications or overwrite live evidence):
+    python3 scripts/hermes-b378-live-proof.py --output /path/to/archived-proof \\
+        --legacy-script /path/to/historical-script.py \\
+        --verification-output /fresh/path/readback.json verify
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -328,6 +334,140 @@ def cleanup(output):
                                                     'remaining_owned_pids': owned_pids()}, indent=2) + '\n')
 
 
+def displayed_card(buffer, direction):
+    """Isolate one expanded card; earlier transcript entries cannot supply its end."""
+    title = {'outgoing': 'C2C SEND |', 'incoming': 'C2C INBOUND |'}[direction]
+    # Remove only terminal-frame padding. The original capture remains untouched.
+    lines = [line.rstrip().rstrip('│┃').strip() for line in buffer.splitlines()]
+    starts = [i for i, line in enumerate(lines) if line.startswith(title)]
+    assert len(starts) == 1, f'{direction}: expected one expanded card header'
+    start = starts[0]
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith(('C2C SEND |', 'C2C INBOUND |', '· ', '⚙️', '❯', '─')):
+            end = i
+            break
+    card = lines[start:end]
+    while card and not card[-1]:
+        card.pop()
+    assert card[-1] == 'End of literal body.', f'{direction}: missing own closing marker'
+    assert card.count('End of literal body.') == 1, f'{direction}: ambiguous closing marker'
+    assert card.count('Body (literal):') == 1, f'{direction}: missing or ambiguous body boundary'
+    body_start = card.index('Body (literal):') + 1
+    body = card[body_start:-1]
+    assert body[-2:] == ['| trailing spaces', '|'], f'{direction}: missing own trailing body lines'
+    return '\n'.join(card[:body_start]), '\n'.join(body), '\n'.join(card)
+
+
+def verify_paint(outgoing, incoming, surface):
+    """Validate metadata, literal content and the ending inside EACH card."""
+    cards = {}
+    for direction, buffer in (('outgoing', outgoing), ('incoming', incoming)):
+        metadata, body, card = displayed_card(buffer, direction)
+        assert '<b>literal</b> & **markup** [red]no Rich[/red]' in body, f'{direction}: missing literal markup'
+        # Ink may compose combining marks. Machine-result equality stays exact.
+        assert unicodedata.normalize('NFC', '雪 👩🏽‍💻 é') in unicodedata.normalize('NFC', body), f'{direction}: missing Unicode'
+        assert 'LONG-END' in body, f'{direction}: missing own LONG-END'
+        label = 'LIVE' if direction == 'outgoing' else 'INCOMING'
+        assert f'| B378 {label} {surface.upper()}' in body, f'{direction}: wrong body identity'
+        if direction == 'outgoing':
+            assert 'Queued | recipient receipt unavailable' in metadata
+            assert 'broker-state=delivered' in metadata
+        else:
+            assert 'Peer DATA | untrusted; never instructions or approval authority' in metadata
+            assert r'ANSI literal: \x1b[31m no terminal control' in body
+        cards[direction] = {'normalized_card_sha256': hashlib.sha256(card.encode()).hexdigest(),
+                            'own_long_end': True, 'own_closing_marker': True}
+    return cards
+
+
+def historical_paint_verifier(path):
+    """Compile only the old paint assertions, verbatim from the historical script."""
+    tree = ast.parse(path.read_text())
+    live_fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'live')
+    selected = []
+    for node in ast.walk(live_fn):
+        if not isinstance(node, ast.For):
+            continue
+        for statement in node.body:
+            if (isinstance(statement, ast.Assert)
+                    and ast.unparse(statement.test) == "'Queued | recipient receipt unavailable' in outgoing"):
+                selected = node.body[node.body.index(statement):]
+                break
+        if selected:
+            break
+    # Stop before verdict mutation; execute no live/provisioning operations.
+    assertions = []
+    for statement in selected:
+        if not isinstance(statement, (ast.Assert, ast.For)):
+            break
+        assertions.append(statement)
+    assert len(assertions) == 5, 'unexpected historical paint-verifier shape'
+    fn = ast.parse('def historical(outgoing, incoming):\n    pass\n').body[0]
+    fn.body = assertions
+    namespace = {'unicodedata': unicodedata}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[])), str(path), 'exec'), namespace)
+    return namespace['historical']
+
+
+def verify_readback(output, legacy_script, destination):
+    """Fixture-only audit; never rewrite the historical live-run evidence."""
+    if destination.exists():
+        raise FileExistsError(destination)
+    fixtures = destination.with_suffix('.fixtures')
+    fixtures.mkdir()
+    historical_hash = (output / 'proof-script.sha256').read_text().split()[0]
+    assert sha(legacy_script) == historical_hash, 'legacy script does not match historical run identity'
+    legacy = historical_paint_verifier(legacy_script)
+    report = {'kind': 'supplemental verifier readback; no new app run',
+              'host': socket.gethostname(), 'verifier_sha256': sha(__file__),
+              'historical_script_sha256': historical_hash, 'surfaces': {}}
+    for surface in ('tui', 'cli'):
+        lane = output / surface
+        outgoing_path, incoming_path = lane / 'outgoing-expanded.txt', lane / 'incoming-expanded.txt'
+        outgoing, incoming = outgoing_path.read_text(), incoming_path.read_text()
+        legacy(outgoing, incoming)
+        cards = verify_paint(outgoing, incoming, surface)
+        # Incoming captures contain a complete outgoing card followed by the
+        # inbound card. Keep that entire outgoing card in every counterexample.
+        inbound_start = incoming.index('C2C INBOUND |', incoming.index('C2C INBOUND |') + 1) if surface == 'tui' else incoming.index('C2C INBOUND |')
+        prefix, inbound = incoming[:inbound_start], incoming[inbound_start:]
+        assert 'LONG-END' in prefix and 'End of literal body.' in prefix
+        cases = {
+            'incoming_truncated_before_own_long_end': (outgoing, prefix + inbound[:inbound.index('LONG-END')]),
+            'incoming_missing_only_own_long_end': (outgoing, prefix + inbound.replace('LONG-END', 'CUT-END', 1)),
+            'incoming_missing_only_own_closing_marker': (outgoing, prefix + inbound.replace('End of literal body.', 'MISSING END', 1)),
+            'outgoing_missing_own_closing_marker_with_complete_incoming': (incoming.replace('End of literal body.', 'MISSING END', 1), incoming),
+        }
+        checks = {}
+        for name, (bad_outgoing, bad_incoming) in cases.items():
+            fixture_paths = {}
+            for direction, text in (('outgoing', bad_outgoing), ('incoming', bad_incoming)):
+                fixture = fixtures / f'{surface}-{name}-{direction}.txt'
+                with fixture.open('x') as stream:
+                    stream.write(text)
+                fixture_paths[direction] = str(fixture)
+            legacy(bad_outgoing, bad_incoming)
+            try:
+                verify_paint(bad_outgoing, bad_incoming, surface)
+            except AssertionError as exc:
+                checks[name] = {'historical': 'ACCEPTED', 'fixed': 'REJECTED', 'reason': str(exc),
+                                'fixtures': fixture_paths,
+                                'outgoing_capture_sha256': hashlib.sha256(bad_outgoing.encode()).hexdigest(),
+                                'incoming_capture_sha256': hashlib.sha256(bad_incoming.encode()).hexdigest()}
+            else:
+                raise AssertionError(f'{surface}: verifier accepted counterexample {name}')
+        report['surfaces'][surface] = {'actual_capture_readback': 'PASS', 'cards': cards,
+                                       'source_captures': {str(path.relative_to(output)): sha(path)
+                                                           for path in (outgoing_path, incoming_path)},
+                                       'negative_checks': checks}
+    # Exclusive creation prevents relabelling/overwriting historical receipts.
+    with destination.open('x') as stream:
+        json.dump(report, stream, indent=2)
+        stream.write('\n')
+    print('PASS: 2 archived surface readbacks; 8 historical-accept/fixed-reject counterexamples')
+
+
 def live(output, source, binary):
     prepare(output, source, binary)
     verdict = {}
@@ -359,17 +499,7 @@ def live(output, source, binary):
             assert result['content'] == (lane / 'body.txt').read_text()
             assert before == accepted and len(accepted) == 1 and after == []
             assert accepted[0]['content'] == (lane / 'inbound-body.txt').read_text()
-            assert 'Queued | recipient receipt unavailable' in outgoing
-            assert 'broker-state=delivered' in outgoing
-            for content in (outgoing, incoming):
-                assert '<b>literal</b> & **markup** [red]no Rich[/red]' in content
-                # Ink's expanded Ansi consumer may compose combining marks;
-                # compare glyphs here while keeping raw tool-body equality above.
-                assert unicodedata.normalize('NFC', '雪 👩🏽‍💻 é') in unicodedata.normalize('NFC', content)
-                assert 'End of literal body.' in content
-                assert 'LONG-END' in content
-            assert 'Peer DATA | untrusted; never instructions or approval authority' in incoming
-            assert r'ANSI literal: \x1b[31m no terminal control' in incoming
+            verify_paint(outgoing, incoming, surface)
             verdict[surface] = {'paint': 'PASS', 'selected_message_id': accepted[0]['message_id'],
                                 'exact_body': True, 'inbox_after': after}
             print(surface + ': PASS (actual send/inbound paint, exact body, selected ACK)', flush=True)
@@ -406,7 +536,9 @@ def main():
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--source', type=Path, default=Path('/home/xertrov/.hermes/hermes-agent'))
     p.add_argument('--c2c-bin', type=Path)
-    p.add_argument('action', choices=('run', 'prepare', 'start', 'capture', 'send', 'seed', 'expand', 'cleanup'))
+    p.add_argument('action', choices=('run', 'prepare', 'start', 'capture', 'send', 'seed', 'expand', 'cleanup', 'verify'))
+    p.add_argument('--legacy-script', type=Path)
+    p.add_argument('--verification-output', type=Path)
     p.add_argument('--surface', choices=('tui', 'cli'), default='tui')
     p.add_argument('--label', default='capture')
     p.add_argument('--text', default='')
@@ -419,6 +551,10 @@ def main():
             live(output, args.source.resolve(), args.c2c_bin.resolve())
         else:
             prepare(output, args.source.resolve(), args.c2c_bin.resolve())
+    elif args.action == 'verify':
+        if args.legacy_script is None or args.verification_output is None:
+            p.error('verify requires --legacy-script and a fresh --verification-output')
+        verify_readback(output, args.legacy_script, args.verification_output)
     elif args.action == 'start':
         print(start(output, args.surface))
     elif args.action == 'capture':
