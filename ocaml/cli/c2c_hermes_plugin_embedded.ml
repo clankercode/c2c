@@ -2159,8 +2159,9 @@ second sender in this plugin. Its transport must set
 transport does not mean DATA injection or selective ACK is disabled. Verify
 that companion's installed version/tests before assuming silent delivery.
 
-The selected directional presentation contract follows. The 19-arrow companion
-implementation and Telegram client rendering remain pending, not proven:
+The selected directional presentation contract follows. The companion source
+implements the 19-arrow title; verify the intended profile's installed version
+and Telegram client rendering separately:
 
 - Outgoing: a body-only native `pre` entity whose `language` title is exactly
   `➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤➤`
@@ -2311,6 +2312,7 @@ published at https://c2c.im.
 - docs/get-started.md — install + first-session walkthrough.
 - docs/commands.md — the complete command reference (every subcommand + flag).
 - README.md — project overview and quick start.
-- llms.txt — condensed, LLM-oriented overview of c2c and its surfaces.|hermes_src_l});
+- llms.txt — condensed, LLM-oriented overview of c2c and its surfaces.
+|hermes_src_l});
 ]
 

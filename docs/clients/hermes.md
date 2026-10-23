@@ -156,9 +156,9 @@ next stream boundary. Long TUI system entries can be expanded to read the
 whole card. Older hosts without a supported display interface retain JSON
 tool results, DATA envelopes and plain slash-command output.
 
-The selected 19-arrow companion implementation and Telegram client rendering
-remain pending, not proven. The title stays native `pre.language` metadata,
-not body text.
+The companion source implements this 19-arrow contract. Verify the intended
+profile's installed version and actual Telegram rendering separately. The title
+stays native `pre.language` metadata, not body text.
 
 The companion `c2c-telegram-inbound` gateway adapter owns its native Telegram
 entities and UTF-16-safe chunking. Outgoing bodies use a body-only `pre` entity

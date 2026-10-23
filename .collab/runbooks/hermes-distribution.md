@@ -50,8 +50,9 @@ personal profile and does not overwrite an installation or consent settings.
 Audited companion source: `c2c-telegram-plugin` commit
 `33fc657` is the audited 38-arrow baseline; the operator subsequently selected
 a 19-arrow title, retained as native `pre.language` metadata below. The companion
-19-arrow implementation/commit and Telegram client rendering are pending; do not
-claim the shorter title is already installed or proven visible. Its portable handoff is
+19-arrow implementation is companion commit `a3599fd`. Installation and Telegram
+client rendering still require their own evidence; do not infer them from source.
+Its portable handoff is
 `docs/upstream-silent-cards.md` in that repository. This is a separate
 installation: this c2c embed neither contains nor updates that sender.
 
