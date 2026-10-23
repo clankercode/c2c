@@ -22,3 +22,5 @@ Isolated mocked probes against installed ~/.hermes/plugins/c2c; seven Python fil
 
 
 Execution lane and decision (2026-10-22): Decision: shared runtime lane B372→B373→B374→B375. Explicit verified session keys and required operator consent; never infer the latest conversation. Preserve mail for unsupported/ended/unknown targets and process first-turn mail. No automatic gateway opt-in or unrelated session restart.
+
+2026-10-23 integrated native fixture rerun PASS at29506fc2 on x-p35: exact target routing, first-turn request-context acceptance and ended/unknown/no-consent retention checked with freshly built CLI. See .collab/findings/2026-10-23-hermes-integrated-native-recheck.md; actual app rendering is separately validated under reopened B378.

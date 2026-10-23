@@ -22,3 +22,5 @@ Isolated mocked probes against installed ~/.hermes/plugins/c2c; seven Python fil
 
 
 Execution lane and decision (2026-10-22): Decision: shared runtime lane B372→B373→B374→B375. Reserve delivery ownership atomically per bound session/message, with rollback on refusal. Keep blocking callbacks outside dedup locks; deterministic watcher/pre-LLM and two-watcher race cases must prove one accepted delivery and retryability.
+
+2026-10-23 completion audit retains deterministic atomic-reservation/interleaving regressions and independent source PASS; final real-manager/native corrected-ACK fixture also PASS on clean29506fc2 x-p35. See .collab/findings/2026-10-23-hermes-integrated-native-recheck.md for exact identities/commands and honest enqueue-only limits.

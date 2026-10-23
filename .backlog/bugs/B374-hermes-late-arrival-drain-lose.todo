@@ -22,3 +22,5 @@ Isolated mocked probes against installed ~/.hermes/plugins/c2c; seven Python fil
 
 
 Execution lane and decision (2026-10-22): Decision: shared runtime lane B372→B373→B374→B375. Prefer existing selected-message acknowledgment primitives over destructive poll; if a durable retry is necessary, persist before removal and preserve original IDs. Logging is not a delivery store. Test late arrivals, refusal, restart and privacy boundaries.
+
+2026-10-23 integrated corrected-native rerun PASS at29506fc2 on x-p35: real manager and native selected ACK preserve unaccepted mail and confirm accepted request-context handoff. See .collab/findings/2026-10-23-hermes-integrated-native-recheck.md; this closes the old handoff pending corrected-native fixture rerun without upgrading it to live model-wake evidence.

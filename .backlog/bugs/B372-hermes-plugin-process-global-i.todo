@@ -22,3 +22,5 @@ Isolated mocked probes against installed ~/.hermes/plugins/c2c; seven Python fil
 
 
 Execution lane and decision (2026-10-22): Decision: one serial runtime lane for B372→B373→B374→B375 because identity.py, c2c_cli.py, hooks, delivery.py and watcher ownership overlap. Use per-session/profile immutable subprocess bindings, fail closed on missing/ambiguous invocation ownership, then target-key delivery, selective ack/durable preservation and atomic delivery reservation. Keep native hooks/MCP B098 data semantics. Rehome the supplied probe, test on x-p35 only.
+
+2026-10-23 completion-audit rerun: integrated source 29506fc2, clean isolated x-p35 clone, fresh just check exit0 and real PluginManager/native corrected-ACK fixture exit0 (one test). Verified distinct A/B immutable identities, scrubbed inherited scope, correct send identity and finalization. Full exact commands, binary/module hashes and limits are recorded in .collab/findings/2026-10-23-hermes-integrated-native-recheck.md. Enqueue/request-context proof only; no model-wake claim.
