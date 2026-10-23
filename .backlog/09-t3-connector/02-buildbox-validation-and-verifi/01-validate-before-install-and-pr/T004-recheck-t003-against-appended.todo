@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-10-23T03:21:22Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-10-22T08:19:54Z"
 depends_on:
@@ -6,12 +9,11 @@ depends_on:
 estimate_hours: 2
 id: P9.M2.E1.T004
 priority: high
-status: pending
-tags:
-    - idea
-    - planning
+started_at: "2026-10-23T03:21:22Z"
+status: in_progress
+tags: []
 title: Recheck T003 against appended NAS relay and contact-client coordination requirements
-updated_at: "2026-10-22T08:19:54Z"
+updated_at: "2026-10-23T03:21:22Z"
 ---
 ## Purpose
 T003 may already have been claimed or underway when its body was appended with the NAS dogfood coordination note for B369/B370. Independently recheck the final T003 result against that update rather than assuming its executing agent saw it.
