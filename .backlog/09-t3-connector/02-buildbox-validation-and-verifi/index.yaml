@@ -11,15 +11,15 @@ epics:
       locked: false
       name: Validate before install and prove running service
       path: 01-validate-before-install-and-pr
-      status: pending
+      status: done
 estimate_hours: 18
 id: P9.M2
 locked: false
 name: Buildbox validation and verified installation
 stats:
-    blocked: 1
-    done: 2
+    blocked: 0
+    done: 4
     in_progress: 0
-    pending: 1
+    pending: 0
     total_tasks: 4
-status: pending
+status: done

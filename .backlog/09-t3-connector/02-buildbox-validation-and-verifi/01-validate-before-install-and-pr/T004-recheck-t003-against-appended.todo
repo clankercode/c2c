@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-23T03:21:22Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-23T03:30:14Z"
 complexity: medium
 created_at: "2026-10-22T08:19:54Z"
 depends_on:
     - P9.M2.E1.T003
+duration_minutes: 8.866758612783332
 estimate_hours: 2
 id: P9.M2.E1.T004
 priority: high
 started_at: "2026-10-23T03:21:22Z"
-status: in_progress
+status: done
 tags: []
 title: Recheck T003 against appended NAS relay and contact-client coordination requirements
-updated_at: "2026-10-23T03:21:22Z"
+updated_at: "2026-10-23T03:30:14Z"
 ---
 ## Purpose
 T003 may already have been claimed or underway when its body was appended with the NAS dogfood coordination note for B369/B370. Independently recheck the final T003 result against that update rather than assuming its executing agent saw it.
@@ -27,3 +28,5 @@ T003 may already have been claimed or underway when its body was appended with t
 
 ## Acceptance
 A review receipt explicitly cites the appended note, exact T003 candidate/source identity and relevant validation evidence, gives PASS or concrete gaps, and records any corrective backlog IDs. Task existence is not proof T003 was rechecked. Preserve existing T003 claims/history; perform this follow-up after T003 completion.
+
+2026-10-23 independent recheck PASS after T003 completion. Receipt .collab/findings/2026-10-23-p9-t004-independent-recheck.md (origin a2b3caa8) explicitly examines appended NAS/contact note, draft 3513ca6c reuse, serial shared-send integration, exact b8 commit/tree/original manifests, actual eight-leg public run 19ba9f809e3149f7b14d2380 and cleanup. LAN/NAS not substituted; changed later Hermes sources not certified by b8 receipts. B369/B370 fully landed before b8; no concrete gap or corrective backlog ID. Only review evidence changed; no fresh runtime/test claim.

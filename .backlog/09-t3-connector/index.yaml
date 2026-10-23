@@ -2,7 +2,7 @@ complexity: high
 depends_on: []
 estimate_hours: 66
 id: P9
-locked: false
+locked: true
 milestones:
     - complexity: high
       depends_on: []
@@ -22,13 +22,13 @@ milestones:
       locked: false
       name: Buildbox validation and verified installation
       path: 02-buildbox-validation-and-verifi
-      status: pending
+      status: done
 name: Native c2c connector for unmodified T3 Code
 stats:
-    blocked: 1
-    done: 10
+    blocked: 0
+    done: 12
     in_progress: 0
-    pending: 1
+    pending: 0
     total_tasks: 12
-status: pending
+status: done
 weeks: 3
