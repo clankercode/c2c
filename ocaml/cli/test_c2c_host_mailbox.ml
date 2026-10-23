@@ -138,14 +138,72 @@ let test_lifecycle () = with_root (fun root ->
   Alcotest.(check int) "other thread remains registered" 1
     (List.length (List.filter (fun r -> r.session_id = sid other) (B.load_registrations (B.create ~root)))))
 
+(* Keep this expectation independent of the implementation list. Includes
+   extension/CLI-only harnesses and the legacy Crush namespace; PTY/tmux are
+   transports, not harness identities. Managed start normalizes headless. *)
+let client_namespaces =
+  [ "claude", "claude"; "codex", "codex"; "codex-headless", "codex";
+    "opencode", "opencode"; "kimi", "kimi"; "pi", "pi"; "crush", "crush";
+    "grok", "grok"; "agy", "agy"; "hermes", "hermes"; "cursor", "cursor";
+    "muse", "muse" ]
+
 let test_reserved_client_namespaces () = with_root (fun root ->
-  List.iter (fun client_type ->
-    let b = bind ~thread_id:(client_type ^ "-thread")
-        ~alias:(client_type ^ "-owned") ~client_type root in
-    Alcotest.(check string) (client_type ^ " namespace")
-      (client_type ^ "-owned") (alias b))
-    [ "claude"; "codex"; "opencode"; "kimi"; "crush"; "grok"; "agy";
-      "hermes"; "cursor"; "muse" ];
+  let namespaces = List.sort_uniq String.compare (List.map snd client_namespaces) in
+  List.iter (fun (client_type, namespace) ->
+    let thread_id = client_type ^ "-thread" in
+    let owned_alias = namespace ^ "-owned-by-" ^ client_type in
+    let b = bind ~thread_id ~alias:owned_alias ~client_type root in
+    Alcotest.(check string) (client_type ^ " namespace") owned_alias (alias b);
+    Alcotest.(check string) "canonical namespace returned" namespace (text b "client_type");
+    let state = Yojson.Safe.from_string (bytes
+      (Filename.concat (Filename.concat root "host-bindings") (sid b ^ ".json"))) |> binding in
+    Alcotest.(check string) "canonical namespace persisted" namespace (text state "client_type");
+    check "omitted namespace on rebind retains assertion" true (b = bind ~thread_id root);
+    check "case-folded namespace rebind is idempotent" true
+      (b = bind ~thread_id ~client_type:(" " ^ String.uppercase_ascii client_type ^ " ") root);
+    let registration = List.find (fun r -> r.session_id = sid b)
+      (B.load_registrations (B.create ~root)) in
+    check "ownership remains host fenced" true
+      (registration.client_type = Some "host"
+       && registration.registered_by = Some ("host-mailbox:" ^ generation b)
+       && registration.automated_delivery = Some false);
+    local root b "namespace DATA";
+    Alcotest.(check int) "persisted assertion permits mailbox read" 1
+      (List.length (fields (peek root b) "messages"));
+    rejects_reason "registration_conflict" (fun () ->
+      bind ~thread_id:(client_type ^ "-collision")
+        ~alias:(String.uppercase_ascii owned_alias) ~client_type root);
+    List.iter (fun foreign ->
+      if foreign <> namespace then begin
+        rejects_reason ("alias_namespace_mismatch:" ^ namespace) (fun () ->
+          bind ~thread_id:(client_type ^ "-foreign-" ^ foreign)
+            ~alias:(String.uppercase_ascii foreign ^ "-foreign") ~client_type root);
+        rejects_reason "client_type_change_requires_new_identity" (fun () ->
+          bind ~thread_id ~client_type:foreign root)
+      end) namespaces;
+    List.iter (fun reserved ->
+      rejects_reason ("alias_namespace_mismatch:" ^ namespace) (fun () ->
+        bind ~thread_id:(client_type ^ "-bare-" ^ reserved) ~alias:reserved ~client_type root))
+      (namespace :: ["assistant-owned"; "gpt-owned"]);
+    Alcotest.(check int) "rejections preserve original mailbox" 1
+      (List.length (fields (peek root b) "messages"))) client_namespaces;
+  List.iter (fun namespace ->
+    rejects_reason "reserved_alias_requires_client_namespace" (fun () ->
+      bind ~thread_id:("unset-" ^ namespace) ~alias:(namespace ^ "-unset") root)) namespaces;
+  List.iteri (fun i client_type ->
+    rejects_reason "invalid_client_type" (fun () ->
+      bind ~thread_id:("invalid-client-" ^ string_of_int i) ~alias:"ordinary-name" ~client_type root))
+    [""; "  "; "unknown"; "pty"; "tmux"; "pi-agent"; "codex-headless-extra"];
+  List.iter (fun reserved ->
+    rejects_reason "invalid_alias" (fun () ->
+      bind ~thread_id:("system-" ^ reserved) ~alias:reserved ~client_type:"pi" root))
+    ["c2c"; "c2c-system"];
+  let ordinary = bind ~thread_id:"ordinary" ~alias:"ordinary-name" root in
+  check "ordinary alias needs no namespace" true ((ordinary |> member "client_type") = `Null);
+  let headless = bind ~thread_id:"headless-canonical" ~alias:"codex-headless-owned"
+      ~client_type:"codex-headless" root in
+  check "transport change retains canonical identity" true
+    (headless = bind ~thread_id:"headless-canonical" ~client_type:"codex" root);
   let hermes = bind ~thread_id:"hermes-telegram-thread" ~alias:"hermes-telegram-inbound"
       ~client_type:"hermes" root in
   Alcotest.(check string) "explicit namespace permits own reserved prefix"
@@ -154,19 +212,139 @@ let test_reserved_client_namespaces () = with_root (fun root ->
       ~client_type:"codex" root in
   Alcotest.(check string) "other supported namespace permits own prefix"
     "codex-background" (alias codex);
-  rejects_reason "alias_namespace_mismatch:hermes"
-    (fun () -> bind ~thread_id:"wrong-thread" ~alias:"codex-impersonation"
-       ~client_type:"hermes" root);
-  rejects_reason "reserved_alias_requires_client_namespace"
-    (fun () -> bind ~thread_id:"missing-namespace" ~alias:"muse-gateway" root);
-  rejects_reason "invalid_client_type"
-    (fun () -> bind ~thread_id:"unknown-client" ~alias:"hermes-gateway"
-       ~client_type:"unknown" root);
-  rejects_reason "registration_conflict"
-    (fun () -> bind ~thread_id:"collision" ~alias:"hermes-telegram-inbound"
-       ~client_type:"hermes" root);
   check "independent namespaced bindings retain separate mailboxes" true
     (sid hermes <> sid codex))
+
+let test_pi_broker_compatibility () = with_root (fun root ->
+  let broker = B.create ~root in
+  let register ?(from_auto_gen=false) session_id alias =
+    B.register broker ~session_id ~alias ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(B.capture_pid_start_time (Some (Unix.getpid ())))
+      ~client_type:(Some "pi") ~from_auto_gen () in
+  (* pi-c2c's actual explicit --alias path does not set from_auto_gen. *)
+  register "pi-plugin-session" "pi-abc123";
+  register "pi-plugin-session" "pi-abc123";
+  register ~from_auto_gen:true "pi-auto-session" "pi-generated";
+  List.iter (fun alias ->
+    rejects_reason "registration_conflict" (fun () ->
+      bind ~thread_id:("host-cannot-adopt-" ^ alias) ~alias ~client_type:"pi" root))
+    ["pi-abc123"; "pi-generated"];
+  let plugin = List.find (fun r -> r.session_id = "pi-plugin-session")
+    (B.load_registrations broker) in
+  check "host conflict preserves plugin identity" true
+    (plugin.alias = "pi-abc123" && plugin.client_type = Some "pi"
+     && plugin.registered_by = None);
+  let b = bind ~thread_id:"pi-host" ~alias:"pi-host-owned" ~client_type:"pi" root in
+  local root b "Pi host DATA";
+  Alcotest.(check int) "Pi host works alongside plugin" 1
+    (List.length (fields (peek root b) "messages")))
+
+(* Model pre-reservation state without invoking an old binary. Keep the
+   generation, owner and host fence from a real ordinary bind matched. *)
+let legacy_pi_binding ?(legacy_alias="Pi-legacy") ?client_type root =
+  let original = bind ?client_type root in
+  let broker = B.create ~root in
+  let path = Filename.concat (Filename.concat root "host-bindings") (sid original ^ ".json") in
+  let replace key value = function
+    | `Assoc pairs -> `Assoc (List.map (fun (name, old) ->
+        name, if name = key then value else old) pairs)
+    | _ -> assert false in
+  let b = replace "alias" (`String legacy_alias) original in
+  B.with_registry_lock broker (fun () ->
+    B.write_json_file path (replace "binding" b (Yojson.Safe.from_string (bytes path)));
+    B.save_registrations broker (List.map (fun r ->
+      if r.session_id = sid b then { r with alias = alias b } else r)
+      (B.load_registrations broker)));
+  b, path
+
+let test_legacy_pi_other_shapes () =
+  List.iter (fun (legacy_alias, client_type) -> with_root (fun root ->
+    let b, _ = legacy_pi_binding ~legacy_alias ?client_type root in
+    local root b "existing Pi alias";
+    check "pre-reservation Pi alias remains idempotent" true (b = bind root);
+    Alcotest.(check int) "pre-reservation Pi alias retains access" 1
+      (List.length (fields (peek root b) "messages"));
+    rejects_reason "client_type_change_requires_new_identity" (fun () -> bind ~client_type:"pi" root);
+    ignore (unbind root b);
+    let resumed = bind root in
+    check "existing Pi shape reactivation keeps assertion" true
+      (member "client_type" resumed = member "client_type" b);
+    rejects_reason (match client_type with None -> "reserved_alias_requires_client_namespace"
+      | Some client -> "alias_namespace_mismatch:" ^ client) (fun () ->
+      bind ~thread_id:"fresh-shape" ~alias:legacy_alias ?client_type root)))
+    ["Pi", None; "pi-previously-ordinary", Some "hermes"]
+
+let test_legacy_pi_lifecycle () = with_root (fun root ->
+  let b, _ = legacy_pi_binding root in
+  local root b "legacy mail";
+  let page = peek root b in
+  check "legacy type stays null" true (member "client_type" (binding page) = `Null);
+  let id = text (List.hd (fields page "messages")) "message_id" in
+  ignore (ack root b [id]);
+  Alcotest.(check int) "legacy mail acknowledged" 0 (List.length (fields (peek root b) "messages"));
+  check "omitted client rebind is stable" true (b = bind root);
+  local root b "retained through renewal";
+  let renewed = bind ~owner_id:"server-two" root in
+  check "omitted client renewal rotates generation" true (generation renewed <> generation b);
+  check "renewal keeps null type" true (member "client_type" renewed = `Null);
+  rejects_reason "stale_generation" (fun () -> peek root b);
+  rejects_reason "stale_generation" (fun () -> ack root b [id]);
+  rejects_reason "stale_generation" (fun () -> unbind root b);
+  ignore (unbind root renewed);
+  let resumed = bind ~owner_id:"server-two" root in
+  check "legacy reactivation rotates generation" true (generation resumed <> generation renewed);
+  Alcotest.(check int) "legacy reactivation retains mail" 1
+    (List.length (fields (peek root resumed) "messages")))
+
+let test_legacy_pi_upgrade () = with_root (fun root ->
+  let b, path = legacy_pi_binding root in
+  let broker = B.create ~root in
+  local root b "preserved during Pi upgrade";
+  ignore (peek root b);
+  let inbox_before = bytes (text b "inbox_path") in
+  let original = B.load_registrations broker in
+  let snapshot () = List.map bytes [path; B.registry_path broker; text b "inbox_path"] in
+  let before = snapshot () in
+  List.iter (fun client_type ->
+    rejects_reason "client_type_change_requires_new_identity" (fun () -> bind ~client_type root))
+    ["codex"; "hermes"];
+  check "other client rejections change no files" true (before = snapshot ());
+  List.iter (fun foreign ->
+    B.save_registrations broker (List.map foreign original);
+    let before = snapshot () in
+    rejects_reason "registration_conflict" (fun () -> bind ~client_type:"pi" root);
+    rejects_reason "registration_conflict" (fun () -> bind root);
+    rejects_reason "registration_conflict" (fun () -> peek root b);
+    rejects_reason "registration_conflict" (fun () -> ack root b ["any"]);
+    rejects_reason "registration_conflict" (fun () -> unbind root b);
+    check "foreign ownership leaves state registry and mail untouched" true (before = snapshot ());
+    check "rejected upgrade creates no transition" false (Sys.file_exists (path ^ ".pending")))
+    [(fun r -> { r with registered_by = Some "foreign" });
+     (fun r -> { r with pid_start_time = Some (-1) });
+     (fun r -> { r with client_type = Some "pi" })];
+  B.save_registrations broker original;
+  let upgraded = bind ~client_type:" PI " root in
+  Alcotest.(check string) "canonical Pi returned" "pi" (text upgraded "client_type");
+  Alcotest.(check string) "upgrade keeps identity" (sid b) (sid upgraded);
+  Alcotest.(check string) "upgrade keeps exact alias" (alias b) (alias upgraded);
+  Alcotest.(check string) "upgrade keeps inbox bytes" inbox_before (bytes (text b "inbox_path"));
+  check "type change alone rotates generation" true (generation upgraded <> generation b);
+  Alcotest.(check string) "canonical Pi persisted" "pi"
+    (text (binding (Yojson.Safe.from_string (bytes path))) "client_type");
+  let registration = List.hd (B.load_registrations broker) in
+  check "upgrade preserves generic host fence with new generation" true
+    (registration.client_type = Some "host"
+     && registration.registered_by = Some ("host-mailbox:" ^ generation upgraded)
+     && registration.automated_delivery = Some false);
+  rejects_reason "stale_generation" (fun () -> ack root b ["any"]);
+  check "upgraded bind stays stable with omitted or explicit type" true
+    (upgraded = bind root && upgraded = bind ~client_type:"pi" root);
+  rejects_reason "client_type_change_requires_new_identity" (fun () -> bind ~client_type:"codex" root);
+  let ordinary = bind ~thread_id:"ordinary-not-pi" root in
+  rejects_reason "client_type_change_requires_new_identity" (fun () ->
+    bind ~thread_id:(text ordinary "thread_id") ~client_type:"pi" root);
+  Alcotest.(check int) "upgrade retains readable mail" 1
+    (List.length (fields (peek root upgraded) "messages")))
 
 let test_selected_ack () = with_root (fun root ->
   let b = bind root in let broker = B.create ~root in
@@ -344,6 +522,24 @@ let test_crash_recovery () =
     match before with
     | None -> ()
     | Some old -> rejects (fun () -> ack root old ["any"]))) [false;true]
+
+let test_legacy_pi_upgrade_recovery () = with_root (fun root ->
+  let before, path = legacy_pi_binding root in
+  local root before "Pi upgrade interrupted";
+  let owner_pid = Unix.getpid () in
+  kill_at_state_publication (fun () ->
+    ignore (H.bind ~environment_id:"environment" ~thread_id:"thread-one" ~workspace:root
+      ~owner_id:"server-one" ~owner_pid ~broker_root:root ~client_type:"pi" ()));
+  let staged = binding (Yojson.Safe.from_string (bytes path)) in
+  check "Pi upgrade staged a new generation" true (generation staged <> generation before);
+  rejects_reason "binding_transition_pending" (fun () -> peek root staged);
+  let recovered = bind root in
+  check "Pi upgrade recovery completes exact staged binding" true (staged = recovered);
+  Alcotest.(check string) "recovered type is canonical Pi" "pi" (text recovered "client_type");
+  check "Pi upgrade journal removed" false (Sys.file_exists (path ^ ".pending"));
+  rejects_reason "stale_generation" (fun () -> unbind root before);
+  Alcotest.(check int) "Pi upgrade recovery retains mail" 1
+    (List.length (fields (peek root recovered) "messages")))
 
 let test_recovery_rejects_foreign () = with_root (fun root ->
   let before = bind root in let broker = B.create ~root in
@@ -630,6 +826,48 @@ let run_cli ?(host=true) ?(env=Unix.environment ()) root args =
 let cli root args = let status, out = run_cli root args in
   status, Yojson.Safe.from_string out
 
+let test_cli_client_namespaces () = with_root (fun root ->
+  let bind_cli thread_id args = cli root
+    (["bind"; "--environment-id"; "cli-namespaces"; "--thread-id"; thread_id;
+      "--broker-root"; root; "--workspace"; root; "--owner-id"; "cli-owner"] @ args) in
+  let error thread_id args expected =
+    let status, result = bind_cli thread_id args in
+    check "invalid namespace CLI exits nonzero" false (status = Unix.WEXITED 0);
+    Alcotest.(check int) "error schema version" 1 (result |> member "schema_version" |> to_int);
+    Alcotest.(check string) "actionable CLI diagnostic" expected (text result "error") in
+  List.iter (fun (client_type, namespace) ->
+    let owned = namespace ^ "-cli-" ^ client_type in
+    let status, result = bind_cli client_type ["--alias"; owned; "--client-type"; client_type] in
+    check "all harnesses bind through real CLI" true (status = Unix.WEXITED 0);
+    let b = binding result in
+    Alcotest.(check string) "CLI canonical client type" namespace (text b "client_type");
+    let status, rebound = bind_cli client_type [] in
+    check "CLI rebind reads persisted client type" true (status = Unix.WEXITED 0 && binding rebound = b);
+    error (client_type ^ "-collision") ["--alias"; String.uppercase_ascii owned;
+      "--client-type"; client_type] "registration_conflict";
+    let foreign = if namespace = "pi" then "codex" else "pi" in
+    error (client_type ^ "-foreign") ["--alias"; foreign ^ "-cli-foreign";
+      "--client-type"; client_type] ("alias_namespace_mismatch:" ^ namespace);
+    error (client_type ^ "-missing") ["--alias"; namespace ^ "-cli-missing"]
+      "reserved_alias_requires_client_namespace") client_namespaces;
+  List.iteri (fun i invalid ->
+    error ("invalid-" ^ string_of_int i) ["--client-type=" ^ invalid] "invalid_client_type")
+    [""; "  "; "unknown"; "pty"; "tmux"];
+  (* Exercise the exact argv used by pi-c2c/src/c2c-cli.ts, with all state
+     rooted in the fixture so the plugin compatibility probe is local-only. *)
+  let env = Array.to_list (Unix.environment ()) |> List.filter (fun value ->
+    not (List.exists (fun prefix -> String.starts_with ~prefix value)
+      ["HOME="; "C2C_"; "XDG_"])) in
+  let env = Array.of_list (["HOME=" ^ root; "C2C_STATE_HOME=" ^ root;
+    "C2C_MCP_BROKER_ROOT=" ^ root; "C2C_MCP_CLIENT_TYPE=pi";
+    "C2C_MCP_CLIENT_PID=" ^ string_of_int (Unix.getpid ())] @ env) in
+  let status, result = run_cli ~host:false ~env root
+    ["register"; "--alias"; "pi-abc123"; "--session-id"; "pi-plugin-cli"; "--json"] in
+  check "Pi plugin explicit registration CLI remains compatible" true (status = Unix.WEXITED 0);
+  Alcotest.(check string) "Pi plugin retains generated alias" "pi-abc123"
+    (text (Yojson.Safe.from_string result) "alias");
+  error "pi-plugin-collision" ["--alias"; "pi-abc123"; "--client-type"; "pi"] "registration_conflict")
+
 let test_cli () = with_root (fun root ->
   let base = ["--environment-id"; "cli-environment"; "--thread-id"; "../cli/thread";
     "--broker-root"; root] in
@@ -679,6 +917,12 @@ let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
   Alcotest.test_case name `Quick f) [
   "stable framed identity",test_identity; "lifecycle and fencing",test_lifecycle;
   "reserved client namespaces",test_reserved_client_namespaces;
+  "Pi broker registration compatibility",test_pi_broker_compatibility;
+  "legacy Pi lifecycle",test_legacy_pi_lifecycle;
+  "other pre-reservation Pi alias shapes",test_legacy_pi_other_shapes;
+  "legacy Pi explicit upgrade",test_legacy_pi_upgrade;
+  "legacy Pi upgrade crash recovery",test_legacy_pi_upgrade_recovery;
+  "all harness namespaces through real CLI",test_cli_client_namespaces;
   "expected broker root guards workspace moves",test_expected_broker_root;
   "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
   "foreign ownership and corruption",test_conflicts_and_corruption;

@@ -36,13 +36,17 @@ let identity ~environment_id ~thread_id =
   "host-" ^ digest, digest
 
 let supported_client_types =
-  [ "claude"; "codex"; "opencode"; "kimi"; "crush"; "grok"; "agy";
+  [ "claude"; "codex"; "opencode"; "kimi"; "pi"; "crush"; "grok"; "agy";
     "hermes"; "cursor"; "muse" ]
 
 let normalize_client_type = function
   | None -> None
   | Some value ->
       let value = String.lowercase_ascii (String.trim value) in
+      (* Managed start uses the same namespace for both Codex transports
+         (C2c_start.default_alias_prefix). Persist the canonical namespace,
+         rather than granting a second identity when a transport changes. *)
+      let value = match value with "codex-headless" -> "codex" | other -> other in
       if value = "" || not (List.mem value supported_client_types)
       then reject "invalid_client_type"
       else Some value
@@ -55,14 +59,33 @@ let validate_alias ?client_type alias =
   if not (C2c_name.is_valid alias) || B.is_reserved_system_alias alias then
     reject "invalid_alias";
   let folded = String.lowercase_ascii alias in
+  (* Pi's extension registers its generated aliases via explicit CLI --alias,
+     without the broker's from_auto_gen flag. Keep that existing path intact:
+     host namespace assertions reserve all supported client names locally,
+     independently of the global user-alias blocklist. *)
+  let reserved = B.is_banned_alias alias
+    || List.mem (C2c_blocklist.first_segment folded) supported_client_types in
   match client_type with
-  | Some client_type when B.is_banned_alias alias ->
+  | Some client_type when reserved ->
       let prefix = client_type ^ "-" in
       if not (starts_with ~prefix folded)
       then reject ("alias_namespace_mismatch:" ^ client_type)
-  | None when B.is_banned_alias alias ->
+  | None when reserved ->
       reject "reserved_alias_requires_client_namespace"
   | _ -> ()
+
+let legacy_untyped_pi (b : binding) =
+  b.client_type = None && starts_with ~prefix:"pi-" (String.lowercase_ascii b.alias)
+
+let validate_stored_alias b =
+  (* Pi was previously unreserved, even as a bare alias or with another
+     asserted client. Preserve that stored contract without granting fresh
+     binds the same exception. Exact host ownership still gates operations;
+     only untyped pi-* bindings may explicitly upgrade to the Pi namespace. *)
+  if C2c_blocklist.first_segment (String.lowercase_ascii b.alias) = "pi" then begin
+    if not (C2c_name.is_valid b.alias) then reject "invalid_alias"
+  end
+  else validate_alias ?client_type:b.client_type b.alias
 
 let binding_to_json b = `Assoc [
   "environment_id", `String b.environment_id; "thread_id", `String b.thread_id;
@@ -106,7 +129,7 @@ let stored_of_json broker ~environment_id ~thread_id json =
      || binding.generation = ""
      || binding.owner_pid <= 0
   then reject "invalid_binding";
-  validate_alias ?client_type binding.alias;
+  validate_stored_alias binding;
   let owner_id = json |> member "owner_id" |> to_string in
   require_text "owner_id" owner_id;
   { binding; owner_id; active = json |> member "active" |> to_bool }
@@ -251,14 +274,17 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
     let client_type = match previous, client_type with
       | Some state, None -> state.binding.client_type
       | Some state, Some value when state.binding.client_type = Some value -> Some value
+      | Some state, Some "pi" when legacy_untyped_pi state.binding -> Some "pi"
       | Some _, Some _ -> reject "client_type_change_requires_new_identity"
       | None, value -> value in
-    validate_alias ?client_type alias;
+    (match previous with
+     | Some s when alias = s.binding.alias && client_type = s.binding.client_type ->
+         validate_stored_alias s.binding
+     | _ -> validate_alias ?client_type alias);
     let regs = B.load_registrations_strict broker in
     let old_reg = match previous with
       | Some s ->
           if alias <> s.binding.alias then reject "alias_change_requires_new_identity";
-          if client_type <> s.binding.client_type then reject "client_type_change_requires_new_identity";
           owned_registration regs s.binding
       | None ->
           if List.exists (fun (r : registration) -> r.session_id = session_id
@@ -267,6 +293,7 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
           None in
     let unchanged = match previous, old_reg with
       | Some s, Some _ -> s.active && s.owner_id = owner_id && s.binding.workspace = workspace
+          && s.binding.client_type = client_type
           && s.binding.owner_pid = owner_pid
           && s.binding.owner_pid_start_time = owner_pid_start_time
       | _ -> false in

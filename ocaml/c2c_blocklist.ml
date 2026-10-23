@@ -2,6 +2,10 @@
    Auto-generated names are client-prefixed (e.g. codex-ember-frost) and bypass
    this list via [Broker.register ~from_auto_gen:true]. *)
 
+(* Pi is intentionally absent: pi-c2c passes its generated pi-<hash> aliases
+   through explicit CLI --alias, without from_auto_gen. Host mailboxes enforce
+   Pi's namespace locally in C2c_host_mailbox.validate_alias (B377). *)
+
 let banned_aliases =
   [ "gpt"
   ; "assistant"

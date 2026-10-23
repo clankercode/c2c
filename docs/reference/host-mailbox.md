@@ -47,8 +47,31 @@ Foreign prefixes are rejected with `alias_namespace_mismatch:<client>`.
 Reserved aliases without a namespace are rejected with
 `reserved_alias_requires_client_namespace`. This keeps auto-generated client
 names protected while giving authenticated host integrations an explicit,
-persisted namespace assertion. The namespace is immutable for a logical
-identity and is returned as `binding.client_type`.
+persisted namespace assertion. Except for the legacy Pi upgrade below, the
+namespace is immutable for a logical identity and is returned as `binding.client_type`.
+
+Supported namespaces are `claude`, `codex`, `opencode`, `kimi`, `pi`, `grok`,
+`agy`, `hermes`, `cursor`, and `muse`, plus the legacy `crush` namespace.
+Client types are trimmed and case-insensitive. `codex-headless` maps to the
+`codex` namespace, matching managed start; it accepts `codex-` aliases and
+persists `binding.client_type` as `codex`. An omitted client type permits
+ordinary aliases but cannot claim any reserved prefix, including `pi-`.
+An empty or unknown explicit client type returns `invalid_client_type`.
+This Pi reservation applies to host binding. The Pi extension's existing
+explicit `c2c register --alias pi-<hash>` path remains compatible; Pi is not
+added to the broker's global user-alias blocklist.
+
+Existing host bindings with a `pi-` alias and null `client_type` remain readable,
+acknowledgeable, unbindable, and renewable with the client type omitted.
+Existing generation fencing and exact host-registration ownership checks still apply. They may
+explicitly upgrade with `--client-type pi` (case-insensitive): c2c preserves
+the identity, alias and mail, persists canonical `pi`, and renews the generation
+through the normal recoverable transition. Conflicting registrations are
+rejected before publication. This exception permits no other client-type
+change and does not allow fresh untyped Pi binds.
+Previously valid bare `pi` aliases, or `pi-` aliases with another asserted
+client type, also retain their existing fenced operations and metadata;
+they cannot use this namespace upgrade exception.
 
 Bind returns a `binding` object with `environment_id`, `thread_id`, `session_id`,
 `alias`, optional `client_type`, `workspace`, `broker_root`, `inbox_path`, opaque `generation`,
